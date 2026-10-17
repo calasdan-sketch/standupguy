@@ -12,7 +12,9 @@ from collections import OrderedDict
 
 from . import gitlog as gitlog_mod
 
-_PREFIX_RE = re.compile(r"^(\w+)(?:\(.+\))?[:!]\s*(.+)$", re.IGNORECASE)
+# type, optional (scope), optional ! for a breaking change, then ':'.
+# "feat!: drop v1" and "feat(api)!: drop v1" are Features, not "- : drop v1".
+_PREFIX_RE = re.compile(r"^(\w+)(?:\([^)]*\))?!?:\s*(.+)$", re.IGNORECASE)
 
 GROUP_ORDER = ["feat", "fix", "refactor", "docs", "test", "chore", "other"]
 GROUP_TITLES = {
@@ -21,8 +23,14 @@ GROUP_TITLES = {
 }
 
 # Commits that are explicitly work-in-progress: they carry over into the
-# next sprint rather than counting as shipped.
-_WIP_RE = re.compile(r"^\s*(?:\[?wip\]?\b|draft\b)|\[wip\]|\bwip:", re.IGNORECASE)
+# next sprint rather than counting as shipped. Only TAGS count — "wip" as
+# the first word or with a colon, "[wip]"/"[draft]" anywhere, "draft:" or
+# "(draft)" at the start — so "Draft the release notes for v2" and
+# "fix: wipe cache" are ordinary shipped commits.
+_WIP_RE = re.compile(
+    r"^\s*(?:\[?wip\]?\b|\[draft\]|\(draft\)|draft\s*:)"
+    r"|\[wip\]|\[draft\]|\bwip:",
+    re.IGNORECASE)
 
 #: Default sprint window, in days.
 DEFAULT_SPRINT_DAYS = 14
@@ -57,11 +65,49 @@ def _commit_line(c: gitlog_mod.Commit) -> str:
     return f"- {clean}{pr}{files} `{c.sha[:7]}`"
 
 
+def _collect(root: str, since: str, author: str | None, until: str | None,
+             commits: list | None, in_progress: list | None
+             ) -> tuple[list, list]:
+    """The git facts a renderer needs — fetched once, or taken as given
+    so callers that also need the JSON don't run git twice."""
+    if commits is None:
+        commits = gitlog_mod.commits_since(root, since, author, until)
+    if in_progress is None:
+        in_progress = gitlog_mod.uncommitted(root)
+    return commits, in_progress
+
+
+def commit_dict(c: gitlog_mod.Commit) -> dict:
+    """The one JSON shape for a commit, shared by the CLI and the HTTP
+    bridge (`sha, author, email, date, subject, files, pr, wip`)."""
+    return {"sha": c.sha, "author": c.author, "email": c.email,
+            "date": c.date, "subject": c.subject, "files": c.files,
+            "pr": c.pr_number, "wip": is_wip(c.subject)}
+
+
+def to_json(root: str, label: str, since: str, until: str | None,
+            commits: list, in_progress: list,
+            markdown: str | None = None) -> dict:
+    """The machine-readable digest (same keys from `--format json` and
+    from `serve`; `markdown` is included when given)."""
+    data = {
+        "repo": gitlog_mod.repo_name(root), "label": label,
+        "since": since, "until": until,
+        "in_progress": in_progress,
+        "commits": [commit_dict(c) for c in commits],
+    }
+    if markdown is not None:
+        data["markdown"] = markdown
+    return data
+
+
 def digest_markdown(root: str, since: str, label: str,
                     author: str | None = None,
-                    until: str | None = None) -> str:
-    commits = gitlog_mod.commits_since(root, since, author, until)
-    in_progress = gitlog_mod.uncommitted(root)
+                    until: str | None = None, *,
+                    commits: list | None = None,
+                    in_progress: list | None = None) -> str:
+    commits, in_progress = _collect(root, since, author, until,
+                                    commits, in_progress)
     repo = gitlog_mod.repo_name(root)
     lines = [f"# Standup — {repo}", f"_{label}_", ""]
     if not commits and not in_progress:
@@ -108,11 +154,14 @@ def _day_sections(by_day: "OrderedDict[str, list]") -> list[str]:
 
 
 def weekly_markdown(root: str, author: str | None = None,
-                    since: str = "7 days ago") -> str:
-    commits = gitlog_mod.commits_since(root, since, author)
+                    since: str = "7 days ago", until: str | None = None, *,
+                    commits: list | None = None) -> str:
+    if commits is None:
+        commits = gitlog_mod.commits_since(root, since, author, until)
     repo = gitlog_mod.repo_name(root)
+    window = f"{since} → {until}" if until else f"since {since}"
     lines = [f"# Weekly summary — {repo}",
-             f"_{len(commits)} commits since {since} (local dates)_", ""]
+             f"_{len(commits)} commits {window} (local dates)_", ""]
     lines += _day_sections(_by_day(commits))
     lines.append("## Highlights for sprint review")
     lines.append("_pick 3–5 bullets from above_")
@@ -120,15 +169,17 @@ def weekly_markdown(root: str, author: str | None = None,
 
 
 def sprint_markdown(root: str, since: str, until: str | None = None,
-                    author: str | None = None) -> str:
+                    author: str | None = None, *,
+                    commits: list | None = None,
+                    in_progress: list | None = None) -> str:
     """Sprint-review bullets for the window since..until (git date syntax,
     see gitlog._since_to_arg), grouped by local day, plus a *Carried over*
     section: work that is not shipped yet — WIP/draft commits in the
     window and the uncommitted changes in the working tree."""
-    commits = gitlog_mod.commits_since(root, since, author, until)
+    commits, in_progress = _collect(root, since, author, until,
+                                    commits, in_progress)
     shipped = [c for c in commits if not is_wip(c.subject)]
     wip = [c for c in commits if is_wip(c.subject)]
-    in_progress = gitlog_mod.uncommitted(root)
     repo = gitlog_mod.repo_name(root)
     window = f"{since} → {until}" if until else f"since {since}"
     lines = [f"# Sprint review — {repo}",

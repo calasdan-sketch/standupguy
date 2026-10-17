@@ -279,9 +279,10 @@ class TestSanitize(unittest.TestCase):
                     "<!channel|channel>"):
             out = push_mod.sanitize_slack_text(f"x {raw} y")
             self.assertNotIn("<!", out)
-        # near-misses stay untouched
+        # near-misses are not rewritten as mentions (the angle brackets
+        # are still escaped, like every other < > in commit text)
         self.assertEqual(push_mod.sanitize_slack_text("<!channeling>"),
-                         "<!channeling>")
+                         "&lt;!channeling&gt;")
         self.assertEqual(push_mod.sanitize_slack_text("@channelx"),
                          "@channelx")
 

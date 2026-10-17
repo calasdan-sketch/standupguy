@@ -130,8 +130,13 @@ class TestSinceNormalization(unittest.TestCase):
 
     def test_until_bounds_the_range(self):
         tmp = make_two_author_repo()
-        self.assertEqual(_subjects(tmp, None, "2026-10-14", "2026-10-15"),
+        # a bare --until date is INCLUSIVE (through 23:59:59 local time)
+        self.assertEqual(_subjects(tmp, None, "2026-10-14", "2026-10-14"),
                          ["wip: gamma half done", "fix: βήτα crash 🐛"])
+        self.assertEqual(_subjects(tmp, None, "2026-10-14", "2026-10-15"),
+                         ["docs: delta notes", "wip: gamma half done",
+                          "fix: βήτα crash 🐛"])
+        # an explicit time is taken literally
         self.assertEqual(_subjects(tmp, None, "2026-10-14", "2026-10-14 12:00"),
                          ["fix: βήτα crash 🐛"])
 
@@ -175,11 +180,13 @@ class TestSprint(unittest.TestCase):
 
     def test_sprint_window_and_range(self):
         tmp = make_two_author_repo()
-        md = digest_mod.sprint_markdown(tmp, "2026-10-14", "2026-10-15", None)
-        self.assertIn("2026-10-14 → 2026-10-15", md)
+        md = digest_mod.sprint_markdown(tmp, "2026-10-14", "2026-10-14", None)
+        self.assertIn("2026-10-14 → 2026-10-14", md)
         self.assertNotIn("## 2026-10-13", md)
         self.assertNotIn("## 2026-10-15", md)
         self.assertIn("## 2026-10-14", md)
+        md = digest_mod.sprint_markdown(tmp, "2026-10-14", "2026-10-15", None)
+        self.assertIn("## 2026-10-15", md)  # bare --until is inclusive
 
     def test_nothing_carried_over(self):
         tmp = make_two_author_repo()

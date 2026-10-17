@@ -10,6 +10,7 @@ Your history never touches a cloud SaaS.
   standupguy --draft          # LLM prose: Yesterday / Today / Blockers
   standupguy --sprint [DAYS]  # sprint-review bullets, grouped by day,
                               # with a "Carried over" section
+  standupguy --root A --root B   # one section per repo
   standupguy mcp              # MCP server: ask "what did I ship this week"
 """
 
@@ -50,7 +51,13 @@ def _resolve_author(args, root: str) -> str | None:
         return None
     if args.author:
         return args.author
-    return gitlog_mod.default_author(root) or None
+    email = gitlog_mod.default_author(root)
+    if not email:
+        print(f"note: no git user.email configured in {root} — showing "
+              "every author (set one with `git config user.email you@x`, "
+              "or pass --author / --all)", file=sys.stderr)
+        return None
+    return email
 
 
 def _window(args) -> tuple[str, str | None, str]:
@@ -67,16 +74,51 @@ def _window(args) -> tuple[str, str | None, str]:
     return since, args.until, label
 
 
-def cmd_digest(args) -> int:
-    root = args.root
+def _check_dates(args) -> bool:
+    """Refuse impossible ISO dates (exit 2); warn about words git will
+    silently ignore. Returns False when the run must stop."""
+    for flag, value in (("--since", args.since), ("--until", args.until)):
+        if not value:
+            continue
+        try:
+            warning = gitlog_mod.check_date(value)
+        except ValueError as e:
+            print(f"error: {flag} {e}", file=sys.stderr)
+            return False
+        if warning:
+            print(f"warning: {flag} {warning}", file=sys.stderr)
+    return True
+
+
+def _repo_digest(args, root: str) -> tuple[str, dict]:
+    """(markdown, json payload) for one repo — git runs once per repo."""
     author = _resolve_author(args, root)
     since, until, label = _window(args)
+    commits = gitlog_mod.commits_since(root, since, author, until)
+    in_progress = gitlog_mod.uncommitted(root)
     if args.sprint is not None:
-        md = digest_mod.sprint_markdown(root, since, until, author)
+        md = digest_mod.sprint_markdown(root, since, until, author,
+                                        commits=commits,
+                                        in_progress=in_progress)
     elif args.week:
-        md = digest_mod.weekly_markdown(root, author, since)
+        md = digest_mod.weekly_markdown(root, author, since, until,
+                                        commits=commits)
     else:
-        md = digest_mod.digest_markdown(root, since, label, author, until)
+        md = digest_mod.digest_markdown(root, since, label, author, until,
+                                        commits=commits,
+                                        in_progress=in_progress)
+    return md, digest_mod.to_json(root, label, since, until, commits,
+                                  in_progress)
+
+
+def cmd_digest(args) -> int:
+    results = [_repo_digest(args, root) for root in args.root]
+    if args.format == "json":
+        payloads = [p for _, p in results]
+        data = payloads[0] if len(payloads) == 1 else {"repos": payloads}
+        print(json.dumps(data, indent=2))
+        return 0
+    md = "\n".join(m for m, _ in results)
     if args.draft:
         try:
             md = draft_mod.draft(
@@ -84,19 +126,6 @@ def cmd_digest(args) -> int:
         except draft_mod.DraftError as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
-    if args.format == "json":
-        commits = gitlog_mod.commits_since(root, since, author, until)
-        print(json.dumps({
-            "repo": gitlog_mod.repo_name(root), "label": label,
-            "since": since, "until": until,
-            "in_progress": gitlog_mod.uncommitted(root),
-            "commits": [{"sha": c.sha, "author": c.author, "email": c.email,
-                         "date": c.date, "subject": c.subject,
-                         "files": c.files, "pr": c.pr_number,
-                         "wip": digest_mod.is_wip(c.subject)}
-                        for c in commits],
-        }, indent=2))
-        return 0
     if args.push_slack:
         webhook = args.push_slack if args.push_slack is not True else \
             os.environ.get("AUTOSTANDUP_SLACK_WEBHOOK", "")
@@ -129,7 +158,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="standupguy", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
-    p.add_argument("--root", default=os.getcwd(), help="Repo path.")
+    p.add_argument("--root", action="append", default=None, metavar="PATH",
+                   help="Repo path (default: the current directory). Repeat "
+                        "for a multi-repo digest: one section per repo.")
     p.add_argument("--author", default=None,
                    help="Filter by author: case-insensitive substring of the "
                         "author name or email (default: your git user.email).")
@@ -140,7 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "'3 days ago', 'last monday' … Values without a time "
                         "of day mean midnight; the words are passed to git.")
     p.add_argument("--until", default=None,
-                   help="End of the range (git date, same rules as --since).")
+                   help="End of the range (git date). A bare date is "
+                        "inclusive: --until 2026-10-15 means through 23:59:59.")
     p.add_argument("--week", action="store_true", help="Last 7 days.")
     p.add_argument("--sprint", nargs="?", const=digest_mod.DEFAULT_SPRINT_DAYS,
                    type=_positive_int, default=None, metavar="DAYS",
@@ -171,16 +203,26 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     _harden_streams()
     args = build_parser().parse_args(argv)
-    if args.cmd == "mcp":
-        return mcp_mod.serve(args.root)
-    if args.cmd == "serve":
-        return serve_mod.serve(args.root, args.host, args.port)
+    args.root = args.root or [os.getcwd()]
     try:
-        gitlog_mod._git(args.root, "rev-parse", "--git-dir")
-    except RuntimeError:
-        print("error: not a git repo", file=sys.stderr)
+        if args.cmd == "mcp":
+            return mcp_mod.serve(args.root)
+        if args.cmd == "serve":
+            return serve_mod.serve(args.root[0], args.host, args.port)
+        for root in args.root:
+            try:
+                gitlog_mod._git(root, "rev-parse", "--git-dir")
+            except gitlog_mod.GitNotFound:
+                raise
+            except RuntimeError:
+                print(f"error: not a git repo: {root}", file=sys.stderr)
+                return 2
+        if not _check_dates(args):
+            return 2
+        return cmd_digest(args)
+    except gitlog_mod.GitNotFound as e:
+        print(f"error: {e}", file=sys.stderr)
         return 2
-    return cmd_digest(args)
 
 
 if __name__ == "__main__":
