@@ -6,7 +6,7 @@ n8n at http://localhost:8765/digest.
 
 Endpoints:
   GET /health                       -> {"ok": true}
-  GET /digest?since=&author=&format= -> standup digest (json|markdown)
+  GET /digest?since=&until=&author=&format= -> standup digest (json|markdown)
   GET /week?author=&format=          -> weekly summary (json|markdown)
 
 Binds 127.0.0.1 by default. Only open --host 0.0.0.0 if you know why.
@@ -60,9 +60,10 @@ def _payload(root: str, query: dict, weekly: bool) -> tuple[int, str, str]:
         label = "week"
     else:
         since = query.get("since", ["yesterday"])[0] or "yesterday"
-        md = digest_mod.digest_markdown(root, since, f"since {since}", author)
-        commits = gitlog_mod.commits_since(root, since, author)
-        label = f"since {since}"
+        until = query.get("until", [None])[0] or None
+        label = f"{since} → {until}" if until else f"since {since}"
+        md = digest_mod.digest_markdown(root, since, label, author, until)
+        commits = gitlog_mod.commits_since(root, since, author, until)
     if fmt == "markdown":
         return 200, "text/markdown; charset=utf-8", md
     body = json.dumps({

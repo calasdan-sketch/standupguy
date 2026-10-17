@@ -1,4 +1,9 @@
-"""StandupGuy tests: fixture repos with dated commits."""
+"""StandupGuy tests: fixture repos with dated commits.
+
+Importing this module isolates git from the developer's machine for the
+whole test process (no global/system gitconfig; HOME/USERPROFILE in a temp
+dir), so autocrlf/gpgsign/hooks settings can never leak into fixtures.
+"""
 
 import io
 import json
@@ -10,12 +15,20 @@ import unittest
 from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from standupguy import cli as cli_mod
-from standupguy import digest as digest_mod
-from standupguy import draft as draft_mod
-from standupguy import gitlog as gitlog_mod
-from standupguy import mcp as mcp_mod
-from standupguy import push as push_mod
+_HOME = tempfile.mkdtemp(prefix="sg-home-")
+with open(os.path.join(_HOME, "gitconfig"), "w", encoding="utf-8") as _f:
+    _f.write("[init]\n\tdefaultBranch = main\n")
+os.environ["GIT_CONFIG_GLOBAL"] = os.path.join(_HOME, "gitconfig")
+os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+os.environ["HOME"] = _HOME
+os.environ["USERPROFILE"] = _HOME
+
+from standupguy import cli as cli_mod  # noqa: E402
+from standupguy import digest as digest_mod  # noqa: E402
+from standupguy import draft as draft_mod  # noqa: E402
+from standupguy import gitlog as gitlog_mod  # noqa: E402
+from standupguy import mcp as mcp_mod  # noqa: E402
+from standupguy import push as push_mod  # noqa: E402
 
 
 def git(tmp, *args, env=None):
@@ -30,7 +43,7 @@ def commit(tmp, name, email, date, message, files):
     for rel, content in files.items():
         p = os.path.join(tmp, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
     git(tmp, "add", "-A")
     env = {"GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date,
@@ -56,7 +69,7 @@ def make_repo() -> str:
     commit(tmp, "Teammate", "t@example.com", "2026-10-14T16:00:00",
            "docs: update readme", {"README.md": "z"})
     # uncommitted work
-    with open(os.path.join(tmp, "wip.py"), "w") as f:
+    with open(os.path.join(tmp, "wip.py"), "w", encoding="utf-8") as f:
         f.write("wip")
     return tmp
 

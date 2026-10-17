@@ -8,7 +8,8 @@ Your history never touches a cloud SaaS.
   standupguy                  # yesterday's digest
   standupguy --week           # last 7 days
   standupguy --draft          # LLM prose: Yesterday / Today / Blockers
-  standupguy --sprint         # sprint-review bullets
+  standupguy --sprint [DAYS]  # sprint-review bullets, grouped by day,
+                              # with a "Carried over" section
   standupguy mcp              # MCP server: ask "what did I ship this week"
 """
 
@@ -29,6 +30,21 @@ from . import serve as serve_mod
 VERSION = "0.1.0"
 
 
+def _harden_streams() -> None:
+    """Never crash on a console that cannot encode a commit subject or the
+    digest's own marks (🌱, ✓, —) — Windows cp1252 consoles in particular.
+    Python's stderr already replaces unencodable characters; make stdout
+    do the same instead of raising UnicodeEncodeError."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None or getattr(stream, "errors", None) != "strict":
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def _resolve_author(args, root: str) -> str | None:
     if args.all:
         return None
@@ -37,16 +53,30 @@ def _resolve_author(args, root: str) -> str | None:
     return gitlog_mod.default_author(root) or None
 
 
+def _window(args) -> tuple[str, str | None, str]:
+    """(since, until, label) for the requested mode."""
+    if args.sprint is not None:
+        since = args.since or f"{args.sprint} days ago"
+        label = f"{since} → {args.until}" if args.until else f"since {since}"
+        return since, args.until, f"sprint {label}"
+    if args.week:
+        since = args.since or "7 days ago"
+        return since, args.until, "week"
+    since = args.since or "yesterday"
+    label = f"{since} → {args.until}" if args.until else f"since {since}"
+    return since, args.until, label
+
+
 def cmd_digest(args) -> int:
     root = args.root
     author = _resolve_author(args, root)
-    if args.week or args.sprint:
-        md = digest_mod.weekly_markdown(root, author)
-        label = "week"
+    since, until, label = _window(args)
+    if args.sprint is not None:
+        md = digest_mod.sprint_markdown(root, since, until, author)
+    elif args.week:
+        md = digest_mod.weekly_markdown(root, author, since)
     else:
-        since = args.since or "yesterday"
-        label = f"since {since}"
-        md = digest_mod.digest_markdown(root, since, label, author)
+        md = digest_mod.digest_markdown(root, since, label, author, until)
     if args.draft:
         try:
             md = draft_mod.draft(
@@ -55,15 +85,16 @@ def cmd_digest(args) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 2
     if args.format == "json":
-        commits = gitlog_mod.commits_since(
-            root, "7 days ago" if (args.week or args.sprint) else
-            (args.since or "yesterday"), author)
+        commits = gitlog_mod.commits_since(root, since, author, until)
         print(json.dumps({
             "repo": gitlog_mod.repo_name(root), "label": label,
+            "since": since, "until": until,
             "in_progress": gitlog_mod.uncommitted(root),
-            "commits": [{"sha": c.sha, "author": c.author, "date": c.date,
-                         "subject": c.subject, "files": c.files,
-                         "pr": c.pr_number} for c in commits],
+            "commits": [{"sha": c.sha, "author": c.author, "email": c.email,
+                         "date": c.date, "subject": c.subject,
+                         "files": c.files, "pr": c.pr_number,
+                         "wip": digest_mod.is_wip(c.subject)}
+                        for c in commits],
         }, indent=2))
         return 0
     if args.push_slack:
@@ -84,18 +115,39 @@ def cmd_digest(args) -> int:
     return 0
 
 
+def _positive_int(value: str) -> int:
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number of days, got {value!r}")
+    if n <= 0:
+        raise argparse.ArgumentTypeError("--sprint DAYS must be >= 1")
+    return n
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="standupguy", description=__doc__)
+    p = argparse.ArgumentParser(prog="standupguy", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     p.add_argument("--root", default=os.getcwd(), help="Repo path.")
-    p.add_argument("--author", default=None, help="Filter by author.")
+    p.add_argument("--author", default=None,
+                   help="Filter by author: case-insensitive substring of the "
+                        "author name or email (default: your git user.email).")
     p.add_argument("--all", action="store_true",
                    help="Include all authors (default: your git user).")
     p.add_argument("--since", default=None,
-                   help="git date: 'yesterday' (default), '2026-10-01', …")
+                   help="git date: 'yesterday' (default), '2026-10-01', "
+                        "'3 days ago', 'last monday' … Values without a time "
+                        "of day mean midnight; the words are passed to git.")
+    p.add_argument("--until", default=None,
+                   help="End of the range (git date, same rules as --since).")
     p.add_argument("--week", action="store_true", help="Last 7 days.")
-    p.add_argument("--sprint", action="store_true",
-                   help="Sprint-review bullets (weekly + highlights).")
+    p.add_argument("--sprint", nargs="?", const=digest_mod.DEFAULT_SPRINT_DAYS,
+                   type=_positive_int, default=None, metavar="DAYS",
+                   help="Sprint-review bullets for the last DAYS days "
+                        f"(default {digest_mod.DEFAULT_SPRINT_DAYS}), or for "
+                        "--since/--until, grouped by local day with a "
+                        "'Carried over' section (WIP commits + uncommitted work).")
     p.add_argument("--draft", action="store_true",
                    help="Draft Yesterday/Today/Blockers prose via local model.")
     p.add_argument("--format", choices=["markdown", "json"],
@@ -117,6 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    _harden_streams()
     args = build_parser().parse_args(argv)
     if args.cmd == "mcp":
         return mcp_mod.serve(args.root)

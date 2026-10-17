@@ -1,11 +1,40 @@
 [build-system]
-requires = ["setuptools>=61"]
+# >= 77: `license = "MIT"` (SPDX string, PEP 639) is accepted by the backend.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
+
 [project]
 name = "standupguy"
 version = "0.1.0"
 description = "Local-first standup notes from git ground truth."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+
 [project.scripts]
 standupguy = "standupguy.cli:main"
+
+[tool.setuptools]
+# Explicit: the flat layout also holds tests/ and workflows/, which
+# setuptools' auto-discovery otherwise refuses ("Multiple top-level
+# packages discovered in a flat-layout") — `pip install .` used to fail.
+packages = ["standupguy"]
+
+[tool.pytest.ini_options]
+# tests import each other as top-level modules, like
+# `python -m unittest discover -s tests` does.
+pythonpath = ["tests"]
+testpaths = ["tests"]

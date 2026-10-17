@@ -67,6 +67,15 @@ class TestServe(unittest.TestCase):
         self.assertEqual(status, 200)
         json.loads(body)
 
+    def test_digest_until_range(self):
+        status, _, body = get(
+            self.port, "/digest?since=2026-10-01&until=2026-10-12&format=json")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertEqual([c["subject"] for c in data["commits"]],
+                         ["chore: bump deps"])
+        self.assertEqual(data["label"], "2026-10-01 → 2026-10-12")
+
     def test_week(self):
         status, _, body = get(self.port, "/week?author=dan@example.com")
         self.assertEqual(status, 200)
@@ -109,7 +118,7 @@ class TestWorkflow(unittest.TestCase):
                         "activepieces-standup-digest.json")
 
     def test_valid_activepieces_flow(self):
-        with open(self.PATH) as f:
+        with open(self.PATH, encoding="utf-8") as f:
             wf = json.load(f)
         steps = {s["id"]: s for s in wf["steps"]}
         pieces = [s["piece"] for s in wf["steps"]]
