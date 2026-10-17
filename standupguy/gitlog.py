@@ -6,6 +6,7 @@ import dataclasses
 import datetime
 import os
 import re
+import secrets
 import subprocess
 import unicodedata
 
@@ -34,17 +35,19 @@ def _git(root: str, *args: str, env: dict | None = None) -> str:
     full_env = dict(os.environ)
     if env:
         full_env.update(env)
-    # git prints UTF-8 (commit messages, author names); never decode it with
-    # the console code page and never die on a stray byte.
+    # git prints UTF-8 (commit messages, author names): decode it by hand,
+    # never with the console code page, never dying on a stray byte, and
+    # never in text mode — universal newlines would turn a lone CR inside a
+    # commit subject into a newline and corrupt the record around it.
     try:
         p = subprocess.run(["git", "-C", root, *args], capture_output=True,
-                           text=True, encoding="utf-8", errors="replace",
                            timeout=60, env=full_env)
     except FileNotFoundError:
         raise GitNotFound(GIT_NOT_FOUND_MESSAGE) from None
     if p.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {p.stderr.strip()[:200]}")
-    return p.stdout
+        err = p.stderr.decode("utf-8", "replace").strip()[:200]
+        raise RuntimeError(f"git {' '.join(args)} failed: {err}")
+    return p.stdout.decode("utf-8", "replace")
 
 
 _MERGE_RE = re.compile(r"merge pull request #(\d+)", re.IGNORECASE)
@@ -167,25 +170,46 @@ def author_matches(commit: Commit, needle: str | None) -> bool:
 
 
 # One record per commit: RS (0x1e) + sha US (0x1f) name US email US date US
-# subject, then (with -z) the touched paths NUL-separated. Control
-# characters cannot appear in a git ident or subject, and -z keeps paths
+# subject, then (with -z) the touched paths NUL-separated; -z keeps paths
 # raw (no quoting), so a '|' in an author name or subject, or a path that
-# happens to start with "COMMIT:", can no longer break the parse.
-_LOG_FORMAT = "--pretty=format:%x1e%H%x1f%an%x1f%ae%x1f%ad%x1f%s"
+# happens to start with "COMMIT:", cannot break the parse.
+#
+# Every separator is followed by a random per-call TOKEN. A commit subject,
+# an author name or even a file name can hold any byte but NUL — RS and US
+# included — so with fixed separators a hostile commit closes its own
+# record and writes a fake one (fake sha, author, date), or shifts the
+# fields of a real one. The token is picked at run time, after the commit
+# was made: no commit can contain it. (token="" is the bare format.)
+def _log_format(token: str = "") -> str:
+    rs, us = "%x1e" + token, "%x1f" + token
+    return f"--pretty=format:{rs}%H{us}%an{us}%ae{us}%ad{us}%s"
 
 
-def parse_log(out: str) -> list[Commit]:
-    """Parse the output of `git log -z <_LOG_FORMAT> --name-only`."""
+# What a record must look like to be believed: a hex sha (the exact set of
+# real ones is checked against `git rev-list`, see commits_since) and the
+# YYYY-MM-DD that --date=format-local:%Y-%m-%d prints.
+_SHA_RE = re.compile(r"[0-9a-f]+")
+_DAY_RE = re.compile(r"\d+-\d\d-\d\d")
+
+
+def parse_log(out: str, token: str = "") -> list[Commit]:
+    """Parse the output of `git log -z <_log_format(token)> --name-only`.
+
+    A record that is not exactly five fields, or whose sha is not hex or
+    whose date is not YYYY-MM-DD, is dropped rather than guessed at."""
+    rs, us = "\x1e" + token, "\x1f" + token
     commits: list[Commit] = []
-    for record in out.split("\x1e"):
+    for record in out.split(rs):
         header, _, body = record.partition("\n")
         header = header.strip("\0")
         if not header:
             continue
-        fields = header.split("\x1f", 4)
+        fields = header.split(us, 4)
         if len(fields) != 5:
             continue
         sha, an, ae, ad, subject = fields
+        if not (_SHA_RE.fullmatch(sha) and _DAY_RE.fullmatch(ad)):
+            continue
         m = _MERGE_RE.search(subject)
         commits.append(Commit(
             sha=sha, author=an, email=ae, date=ad, subject=subject,
@@ -202,13 +226,16 @@ def commits_since(root: str, since: str, author: str | None = None,
     # --date=format-local: the day header is the LOCAL date of this
     # machine, not the committer's timezone (--date=short), so a 23:30
     # PDT commit lands on the right day for a user in Winnipeg.
-    args = ["log", "-z", f"--since={_since_to_arg(since)}",
-            "--date=format-local:%Y-%m-%d", _LOG_FORMAT, "--name-only"]
+    window = [f"--since={_since_to_arg(since)}"]
     if until:
-        args.append(f"--until={_since_to_arg(until, end=True)}")
-    args.append("HEAD")
+        window.append(f"--until={_since_to_arg(until, end=True)}")
+    token = secrets.token_hex(8)    # see _log_format
     try:
-        out = _git(root, *args)
+        out = _git(root, "log", "-z", *window, "--date=format-local:%Y-%m-%d",
+                   _log_format(token), "--name-only", "HEAD")
+        # Second opinion: the shas git itself lists for the same range.
+        # Asked AFTER the log, so a commit made in between can only add.
+        real = set(_git(root, "rev-list", *window, "HEAD").split())
     except GitNotFound:
         raise
     except RuntimeError as e:
@@ -216,7 +243,7 @@ def commits_since(root: str, since: str, author: str | None = None,
         if "unknown revision" in str(e):
             return []
         raise
-    commits = parse_log(out)
+    commits = [c for c in parse_log(out, token) if c.sha in real]
     if author:
         commits = [c for c in commits if author_matches(c, author)]
     return commits

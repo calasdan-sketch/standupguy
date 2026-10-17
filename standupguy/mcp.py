@@ -6,6 +6,14 @@ Tools:
 The wire is newline-delimited JSON-RPC in UTF-8 BYTES, whatever the
 console code page (a cp1252 Windows console must not be able to kill the
 server with an author called Łukasz).
+
+Errors: a request the client got wrong is a JSON-RPC error (-32700 parse,
+-32600 invalid request, -32601 unknown method, -32602 invalid params:
+params or arguments that are not objects, a missing or unknown tool name,
+an argument of the wrong type); a tool call that was fine but failed (a
+date git cannot read, a root outside the server's) is an `isError`
+result. -32603 is for bugs only, and the server keeps running after any
+of them. Notifications (no `id`) are never answered, not even with an error.
 """
 
 from __future__ import annotations
@@ -19,6 +27,8 @@ from . import digest as digest_mod
 from . import gitlog as gitlog_mod
 
 SERVER_INFO = {"name": "standupguy", "version": "0.1.0"}
+
+TOOL_NAME = "what_did_i_ship"
 
 INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
@@ -75,10 +85,41 @@ def _tool_result(text: str, is_error: bool = False) -> dict:
     return result
 
 
-def _call_tool(params: dict, roots: list[str]) -> dict:
-    if params.get("name") != "what_did_i_ship":
-        raise LookupError(f"unknown tool: {params.get('name')}")
-    args = params.get("arguments") or {}
+class InvalidParams(Exception):
+    """The params of a request are wrong: JSON-RPC -32602."""
+
+
+def _check_call(params) -> dict:
+    """Validate the `params` of a tools/call; return its arguments.
+
+    Everything rejected here is the client's mistake. What comes after —
+    a date git cannot read, a root outside the server's — is a tool call
+    that ran and failed, reported as an `isError` result instead."""
+    if not isinstance(params, dict):
+        raise InvalidParams(
+            'params must be an object like {"name": "what_did_i_ship", '
+            '"arguments": {...}}')
+    name = params.get("name")
+    if name is None:
+        raise InvalidParams("missing required parameter: name")
+    if not isinstance(name, str):
+        raise InvalidParams("name must be a string")
+    if name != TOOL_NAME:
+        raise InvalidParams(f"unknown tool: {name}")
+    args = params.get("arguments")
+    if args is None:
+        return {}
+    if not isinstance(args, dict):
+        raise InvalidParams("arguments must be an object")
+    for key in ("since", "until", "author", "root"):
+        if args.get(key) is not None and not isinstance(args[key], str):
+            raise InvalidParams(f"argument {key} must be a string")
+    if args.get("all") is not None and not isinstance(args["all"], bool):
+        raise InvalidParams("argument all must be true or false")
+    return args
+
+
+def _call_tool(args: dict, roots: list[str]) -> dict:
     since = args.get("since") or "yesterday"
     until = args.get("until") or None
     label = f"{since} → {until}" if until else f"since {since}"
@@ -112,6 +153,11 @@ def handle(request, roots) -> dict | None:
                                and method.startswith("notifications/")):
         return None
     req_id = request.get("id")
+    # JSON-RPC: an id is a string, a number or null — echoing anything else
+    # back (a list nested a thousand deep) is how a client kills the server
+    if not (req_id is None or (isinstance(req_id, (str, int, float))
+                               and not isinstance(req_id, bool))):
+        return _error(None, INVALID_REQUEST, "Invalid Request")
     if not isinstance(method, str):
         return _error(req_id, INVALID_REQUEST, "Invalid Request")
 
@@ -126,7 +172,7 @@ def handle(request, roots) -> dict | None:
         return ok({})
     if method == "tools/list":
         return ok({"tools": [{
-            "name": "what_did_i_ship",
+            "name": TOOL_NAME,
             "description": ("Get a Markdown digest of what was shipped in a "
                             "git repo since a date: commits grouped by type, "
                             "in-progress files. Local-only, no cloud."),
@@ -149,11 +195,11 @@ def handle(request, roots) -> dict | None:
                                         "all of them)"}}},
         }]})
     if method == "tools/call":
-        params = request.get("params") or {}
         try:
-            return ok(_call_tool(params, roots))
-        except LookupError as e:
+            args = _check_call(request.get("params"))
+        except InvalidParams as e:
             return _error(req_id, INVALID_PARAMS, str(e))
+        return ok(_call_tool(args, roots))
     return _error(req_id, METHOD_NOT_FOUND, f"unknown method: {method}")
 
 
@@ -175,7 +221,7 @@ def serve(roots=None, stdin=None, stdout=None) -> int:
             continue
         try:
             request = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):   # RecursionError: "[[[[..."
             response = _error(None, PARSE_ERROR, "Parse error")
         else:
             try:

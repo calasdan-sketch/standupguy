@@ -12,6 +12,8 @@ Your history never touches a cloud SaaS.
                               # with a "Carried over" section
   standupguy --root A --root B   # one section per repo
   standupguy mcp              # MCP server: ask "what did I ship this week"
+  standupguy serve            # HTTP bridge for n8n / Activepieces (--root
+                              # repeats here too)
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from . import gitlog as gitlog_mod
 from . import mcp as mcp_mod
 from . import push as push_mod
 from . import serve as serve_mod
+from . import stdio as stdio_mod
 
 VERSION = "0.1.0"
 
@@ -111,6 +114,13 @@ def _repo_digest(args, root: str) -> tuple[str, dict]:
                                   in_progress)
 
 
+def _show(text: str) -> None:
+    """Write digest or draft text to the terminal. It is made of commit
+    subjects and file names anyone can write: control characters are shown
+    as visible escapes instead of being obeyed (JSON is left exact)."""
+    sys.stdout.write(stdio_mod.printable(text))
+
+
 def cmd_digest(args) -> int:
     results = [_repo_digest(args, root) for root in args.root]
     if args.format == "json":
@@ -125,6 +135,11 @@ def cmd_digest(args) -> int:
                 md, base_url=args.base_url, model=args.model) + "\n"
         except draft_mod.DraftError as e:
             print(f"error: {e}", file=sys.stderr)
+            # the digest itself needs no model: show it anyway
+            print("note: showing the plain digest instead"
+                  + (" (nothing was posted to Slack)" if args.push_slack
+                     else ""), file=sys.stderr)
+            _show(md)
             return 2
     if args.push_slack:
         webhook = args.push_slack if args.push_slack is not True else \
@@ -140,8 +155,18 @@ def cmd_digest(args) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 2
         return 0
-    sys.stdout.write(md)
+    _show(md)
     return 0
+
+
+def _port(value: str) -> int:
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a port number, got {value!r}")
+    if not 0 <= n <= 65535:
+        raise argparse.ArgumentTypeError("expected a port from 0 to 65535")
+    return n
 
 
 def _positive_int(value: str) -> int:
@@ -160,7 +185,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     p.add_argument("--root", action="append", default=None, metavar="PATH",
                    help="Repo path (default: the current directory). Repeat "
-                        "for a multi-repo digest: one section per repo.")
+                        "for a multi-repo digest (one section per repo); "
+                        "`mcp` and `serve` take it repeated too.")
     p.add_argument("--author", default=None,
                    help="Filter by author: case-insensitive substring of the "
                         "author name or email (default: your git user.email).")
@@ -193,30 +219,55 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("cmd", nargs="?", choices=["mcp", "serve"],
                    help="Run the MCP server (mcp) or HTTP bridge (serve) "
                         "for n8n / workflow tools.")
-    p.add_argument("--port", type=int, default=8765,
+    p.add_argument("--port", type=_port, default=8765,
                    help="Port for `serve` (default 8765).")
     p.add_argument("--host", default="127.0.0.1",
                    help="Bind host for `serve` (default 127.0.0.1).")
     return p
 
 
+def _check_roots(roots: list[str]) -> bool:
+    """Every --root must be a git repo. False (after saying which) if not."""
+    for root in roots:
+        try:
+            gitlog_mod._git(root, "rev-parse", "--git-dir")
+        except gitlog_mod.GitNotFound:
+            raise
+        except RuntimeError:
+            print(f"error: not a git repo: {root}", file=sys.stderr)
+            return False
+    return True
+
+
 def main(argv=None) -> int:
+    try:
+        try:
+            return _main(argv)
+        finally:
+            # a closed pipe is found out HERE, where it can be caught, not
+            # at interpreter exit (also after argparse's --help/--version)
+            if sys.stdout is not None:
+                sys.stdout.flush()
+    except OSError as e:
+        # `standupguy | head -1`: the reader is gone. POSIX says
+        # BrokenPipeError, Windows a plain OSError (EINVAL) -- see stdio.
+        if not stdio_mod.pipe_closed(e):
+            raise
+        stdio_mod.hush_stdout()
+        return 1
+
+
+def _main(argv=None) -> int:
     _harden_streams()
     args = build_parser().parse_args(argv)
     args.root = args.root or [os.getcwd()]
     try:
+        if not _check_roots(args.root):     # mcp, serve and the digest alike
+            return 2
         if args.cmd == "mcp":
             return mcp_mod.serve(args.root)
         if args.cmd == "serve":
-            return serve_mod.serve(args.root[0], args.host, args.port)
-        for root in args.root:
-            try:
-                gitlog_mod._git(root, "rev-parse", "--git-dir")
-            except gitlog_mod.GitNotFound:
-                raise
-            except RuntimeError:
-                print(f"error: not a git repo: {root}", file=sys.stderr)
-                return 2
+            return serve_mod.serve(args.root, args.host, args.port)
         if not _check_dates(args):
             return 2
         return cmd_digest(args)

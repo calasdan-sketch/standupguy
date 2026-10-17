@@ -42,6 +42,13 @@ standupguy mcp                      # MCP server on stdio
 standupguy serve                    # HTTP bridge for Activepieces / workflow tools
 ```
 
+Output piped into something that stops reading early
+(`standupguy --week | head -1`) ends quietly: exit code 1, no traceback.
+On Windows too, where a closed pipe is not a broken-pipe error but a plain
+`OSError` (errno 22) that shows up when the output is flushed. So does
+`mcp` when its client goes away, and `serve` when a client hangs up
+mid-response.
+
 `--author` matches like you'd expect, not like a regex: a case-insensitive
 substring of the author **name or email** (`calas`, `DAN@EXAMPLE.COM`,
 `ξένος`, `"Dan Calas <dan@example.com>"` all work; unicode names are
@@ -70,7 +77,21 @@ the JSON `commits` have exactly the shape of `standupguy --format json`
 `markdown` and `slack_text` — the same digest already sanitized and
 escaped for Slack (see *Push* below); a workflow that posts to Slack
 should send `slack_text`, never raw `markdown`. An impossible date
-(`since=2026-13-45`) is a `400`, not a guess.
+(`since=2026-13-45`) is a `400`, not a guess. A request that fails inside
+the bridge (the repo was moved, `git` went missing) is a `500` with a
+generic `internal error` body: git's command line and your paths are not
+sent to the client, they are printed on the server's stderr, one line per
+failure.
+
+Several repos: `standupguy serve --root /path/a --root /path/b` answers for
+all of them, the way `--root A --root B` does for the digest. The markdown
+has one section per repo, in the order given; the JSON becomes
+`{"repos": [...], "markdown": ..., "slack_text": ...}`, each entry shaped
+like `standupguy --format json` (one root keeps the flat object above, so
+a workflow that reads `slack_text` keeps working when you add a repo).
+Each repo's default `author` is its own `git config user.email`. A port
+that is already in use, or a `--root` that is not a git repo, is a
+one-line `error:` and exit code 2; the server does not start.
 
 [`workflows/activepieces-standup-digest.json`](workflows/activepieces-standup-digest.json)
 is a documented flow definition (it's a human-readable spec, not a native
@@ -105,6 +126,18 @@ _none reported — fill in yours_
 - **Digest mode (default):** pure Python, fully offline. Commits grouped by
   conventional-commit prefix (feat/fix/docs/refactor/test/chore); merge
   commits surface as shipped PRs; `git status` feeds the In-progress section.
+- **Commit text is untrusted.** A subject, an author name or even a file
+  name can contain any control character, so the git log is read with a
+  random separator picked on every run (no commit can contain it) and each
+  sha is checked against `git rev-list` for the same range: a hostile
+  commit cannot add a fake "shipped" entry, borrow a colleague's sha or
+  rewrite another commit's author and date. A record git cannot give a
+  date (a corrupt author line) is dropped rather than shown undated.
+  Text printed to a terminal (the digest, a `--draft` reply) shows every
+  control character as a visible escape — `\x1b` for ESC, `\x0d` for a
+  carriage return, the same for the C1 range — so a commit cannot clear
+  your screen, retitle the window or overwrite a line. `--format json`,
+  `serve` and the MCP server are not terminals and carry the text exactly.
 - **Sprint mode (`--sprint [DAYS]`):** the last DAYS days (default 14), or
   `--since`/`--until`, grouped by day with the same prefix buckets, then a
   **Carried over** section: commits *tagged* WIP/draft (`wip: …`, `WIP …`,
@@ -114,7 +147,12 @@ _none reported — fill in yours_
   prompt.
 - **Draft mode (`--draft`):** sends the digest to your local model via an
   OpenAI-compatible endpoint and gets back Yesterday/Today/Blockers prose.
-  Configure with env vars (Ollama defaults shown):
+  If the model is down, hangs up, or answers with anything but a
+  completion (an HTML error page, an empty or cut-off body), you get one
+  `error:` line on stderr and the plain digest on stdout. The exit code is
+  still 2, even though a digest was printed, so a script can tell that the
+  draft failed; nothing is posted to Slack. Configure with env vars
+  (Ollama defaults shown):
 
 ```bash
 export AUTOSTANDUP_BASE_URL="http://localhost:11434/v1"
@@ -132,9 +170,16 @@ export AUTOSTANDUP_API_KEY="<your key>"
   local git. The server only reads the repo(s) it was started with
   (`--root`, repeatable); a `root` argument must be one of them or a
   directory inside one — an agent cannot point it at some other repo on
-  your disk. The stdio wire is UTF-8 bytes regardless of the console code
-  page, so a cp1252 Windows console cannot kill it with an author called
-  Łukasz.
+  your disk. It will not start when a `--root` (default: the current
+  directory) is not a git repo: one `error: not a git repo: PATH` line and
+  exit code 2, the same as `serve`. The stdio wire is UTF-8 bytes
+  regardless of the console code page, so a cp1252 Windows console cannot
+  kill it with an author called Łukasz. A call the client got wrong
+  (params or `arguments` that are not objects, a missing or unknown tool
+  name, an argument of the wrong type) is JSON-RPC error `-32602`; a call
+  that was fine but failed (an impossible date, a root outside the
+  configured ones) comes back as an `isError` result. The server keeps
+  running after either, and notifications are never answered.
 - **Push:** `--push-slack` POSTs the Markdown to a Slack incoming webhook
   (URL from the flag or `AUTOSTANDUP_SLACK_WEBHOOK`). Commit-derived text
   is sanitized before posting: control characters stripped, lines
@@ -195,11 +240,17 @@ python -m unittest discover -s tests   # or: python -m pytest -q
 ```
 
 No network, no model: fixtures are throwaway git repos (your global
-gitconfig is never read). Covers the digest, `--author` matching, `--sprint`
-and `--until`, local-date headers, date validation, multi-repo output, the
-HTTP bridge, Slack sanitizing and escaping, the MCP server (root
-confinement, notifications, UTF-8 wire under a cp1252 console), a missing
-`git`, and the cp1252 console path.
+gitconfig is never read) and the "model" and "client" are fakes on
+127.0.0.1. Covers the digest, `--author` matching, `--sprint` and
+`--until`, local-date headers, date validation, multi-repo output,
+hostile commit text (forged records, terminal escapes), the HTTP bridge
+(start-up errors, several repos, hang-ups, failing requests), bad model
+answers, Slack sanitizing and escaping, the MCP server (root confinement,
+invalid params, notifications, start-up check, UTF-8 wire under a cp1252
+console), closed pipes (real processes, and Linux stand-ins for Windows'
+errno-22 version of the error), the package metadata, a missing `git`,
+the cp1252 console path, and a check that no source or doc file hides an
+invisible character.
 
 ## License
 

@@ -8,6 +8,7 @@ configured. No cloud SaaS, no data-leak ceremony.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.request
@@ -73,6 +74,14 @@ def _cap_digest(digest_md: str) -> str:
     return digest_md[:MAX_DIGEST_CHARS] + TRUNCATION_NOTE
 
 
+def _snippet(raw: bytes, limit: int = 80) -> str:
+    """What an endpoint said, folded onto one printable line for an error
+    message (no newlines, no terminal escapes)."""
+    text = " ".join(raw.decode("utf-8", "replace").split())
+    text = "".join(ch if ch.isprintable() else "?" for ch in text)
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
 def draft(digest_md: str, *, base_url=None, api_key=None, model=None,
           timeout: int = 120) -> str:
     digest_md = _cap_digest(digest_md)
@@ -83,18 +92,33 @@ def draft(digest_md: str, *, base_url=None, api_key=None, model=None,
                       "content": DRAFT_TEMPLATE.format(digest=digest_md)}],
         "temperature": 0.3,
     }).encode()
-    req = urllib.request.Request(
-        cfg["base_url"] + "/chat/completions", data=body,
-        headers={"Content-Type": "application/json",
-                 "Authorization": f"Bearer {cfg['api_key']}"})
     try:
+        req = urllib.request.Request(
+            cfg["base_url"] + "/chat/completions", data=body,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {cfg['api_key']}"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
+            raw = resp.read()
     except urllib.error.URLError as e:
         raise DraftError(
             f"cannot reach model at {cfg['base_url']} "
             f"(set AUTOSTANDUP_BASE_URL): {e.reason}")
+    except (OSError, http.client.HTTPException) as e:
+        # it answered, then hung up, timed out or sent less than it promised
+        raise DraftError(f"model at {cfg['base_url']} stopped answering: {e}")
+    except ValueError as e:  # a URL or API key that cannot be sent at all
+        raise DraftError(f"cannot call the model at {cfg['base_url']}: {e}")
     try:
-        return data["choices"][0]["message"]["content"].strip()
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError:  # not JSON (an HTML error page, cut off) or not UTF-8
+        got = _snippet(raw)
+        what = f"got: '{got}'" if got else "an empty reply"
+        raise DraftError(f"model at {cfg['base_url']} answered, but not "
+                         f"with JSON ({what})")
+    try:
+        content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as e:
         raise DraftError(f"unexpected response shape: {e}")
+    if not isinstance(content, str) or not content.strip():
+        raise DraftError(f"model at {cfg['base_url']} returned no text")
+    return content.strip()
