@@ -3,13 +3,19 @@
 Importing this module isolates git from the developer's machine for the
 whole test process (no global/system gitconfig; HOME/USERPROFILE in a temp
 dir), so autocrlf/gpgsign/hooks settings can never leak into fixtures.
+Everything the tests create goes under one private directory that is removed
+when the test process ends.
 """
 
+import atexit
 import datetime
 import io
 import json
 import os
+import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -17,7 +23,32 @@ from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest import mock
 
-_HOME = tempfile.mkdtemp(prefix="sg-home-")
+
+def _rmtree(path: str) -> None:
+    """shutil.rmtree that copes with the read-only files git leaves (Windows)."""
+    def _writable(func, p, _exc):
+        try:
+            os.chmod(p, stat.S_IWRITE | stat.S_IREAD)
+            func(p)
+        except OSError:
+            pass
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_writable)
+    else:
+        shutil.rmtree(path, onerror=_writable)
+
+
+# Everything the tests create (their repos, the fake home) goes under one
+# private directory that is removed when the test process ends, instead of
+# piling up in the shared temp directory.
+_BASE = tempfile.mkdtemp(prefix="sg-test-")
+tempfile.tempdir = _BASE
+for _var in ("TMPDIR", "TEMP", "TMP"):
+    os.environ[_var] = _BASE
+atexit.register(_rmtree, _BASE)
+
+_HOME = os.path.join(_BASE, "home")
+os.makedirs(_HOME)
 with open(os.path.join(_HOME, "gitconfig"), "w", encoding="utf-8") as _f:
     _f.write("[init]\n\tdefaultBranch = main\n")
 os.environ["GIT_CONFIG_GLOBAL"] = os.path.join(_HOME, "gitconfig")

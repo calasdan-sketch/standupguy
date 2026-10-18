@@ -88,7 +88,8 @@ class TestServe(unittest.TestCase):
             get(self.port, "/nope")
             self.fail("expected HTTPError")
         except urllib.error.HTTPError as e:
-            self.assertEqual(e.code, 404)
+            with e:
+                self.assertEqual(e.code, 404)
 
     def test_server_is_threaded(self):
         # the Round 2 finding: the old single-threaded HTTPServer wedged on

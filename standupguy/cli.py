@@ -31,7 +31,7 @@ from . import push as push_mod
 from . import serve as serve_mod
 from . import stdio as stdio_mod
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 
 
 def _harden_streams() -> None:
@@ -200,7 +200,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Filter by author: case-insensitive substring of the "
                         "author name or email (default: your git user.email).")
     p.add_argument("--all", action="store_true",
-                   help="Include all authors (default: your git user).")
+                   help="Include all authors (default: your git user). Every "
+                        "author, not every branch: the digest reads the "
+                        "branch that is checked out.")
     p.add_argument("--since", default=None,
                    help="git date: 'yesterday' (default), '2026-10-01', "
                         "'3 days ago', 'last monday' (a bare 'monday' means "
@@ -378,7 +380,7 @@ def _main(argv=None) -> int:
         if not _check_dates(args):
             return 2
         return cmd_digest(args)
-    except gitlog_mod.GitNotFound as e:
+    except (gitlog_mod.GitNotFound, gitlog_mod.GitTimeout) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
 

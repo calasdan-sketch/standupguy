@@ -150,10 +150,11 @@ def _plain(reason, limit: int = 120) -> str:
 
 def _let_go(error) -> None:
     """Close the reply an HTTPError carries (an open connection) now, not
-    whenever the garbage collector gets to it. Other errors carry none."""
-    reply = getattr(error, "fp", None)
-    if reply is not None:
-        reply.close()
+    whenever the garbage collector gets to it. Other errors carry none. The
+    error itself is closed, not only its file: Python 3.14 reports an
+    HTTPError nobody closed, however closed its file is."""
+    if getattr(error, "fp", None) is not None:
+        error.close()
 
 
 def _cfg(base_url=None, api_key=None, model=None):

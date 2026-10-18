@@ -604,7 +604,9 @@ def fetch(port, path):
             return (resp.status, resp.headers.get("Content-Type"),
                     resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        return e.code, e.headers.get("Content-Type"), e.read().decode("utf-8")
+        with e:     # let go of the reply: Python 3.14 warns about one left open
+            return (e.code, e.headers.get("Content-Type"),
+                    e.read().decode("utf-8"))
 
 
 class TestServeHidesItsInternals(unittest.TestCase):

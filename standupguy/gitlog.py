@@ -35,6 +35,22 @@ class GitError(RuntimeError):
         self.stderr = stderr.strip()
 
 
+#: How long one git command may run before it is given up on, in seconds.
+GIT_TIMEOUT = 60
+
+
+class GitTimeout(RuntimeError):
+    """git did not finish within GIT_TIMEOUT seconds (a repository on a drive
+    that went away, say). str() is one line for a person: the git command
+    (its name only, no paths) and how long it was given."""
+
+    def __init__(self, command: str, seconds):
+        unit = "second" if seconds == 1 else "seconds"
+        super().__init__(
+            f"git {command} did not finish within {seconds} {unit} - is the "
+            "repository on a slow or disconnected drive?")
+
+
 GIT_NOT_FOUND_MESSAGE = (
     "git not found on PATH. Install Git (https://git-scm.com/downloads; on "
     "Windows: Git for Windows), then open a new terminal.")
@@ -50,9 +66,11 @@ def _git(root: str, *args: str, env: dict | None = None) -> str:
     # commit subject into a newline and corrupt the record around it.
     try:
         p = subprocess.run(["git", "-C", root, *args], capture_output=True,
-                           timeout=60, env=full_env)
+                           timeout=GIT_TIMEOUT, env=full_env)
     except FileNotFoundError:
         raise GitNotFound(GIT_NOT_FOUND_MESSAGE) from None
+    except subprocess.TimeoutExpired:
+        raise GitTimeout(args[0] if args else "", GIT_TIMEOUT) from None
     if p.returncode != 0:
         raise GitError(" ".join(args), p.stderr.decode("utf-8", "replace"))
     return p.stdout.decode("utf-8", "replace")
@@ -62,14 +80,22 @@ _MERGE_RE = re.compile(r"merge pull request #(\d+)", re.IGNORECASE)
 
 # Does a git date string already carry a time of day? Then it is passed to
 # git untouched. Matches 10:00, 2026-10-14T10:00, noon/midnight/now/tea,
-# "3 hours ago", 5pm, @1700000000 and raw unix timestamps.
+# "3 hours ago", 5pm, @1700000000 and raw unix timestamps: nine digits or
+# more, which is where git itself starts reading a bare number as seconds
+# since 1970. Eight digits are a date, see _COMPACT_DATE_RE.
 _HAS_TIME_RE = re.compile(
     r"\d{1,2}:\d{2}"
     r"|\b(?:noon|midnight|now|tea|hours?|minutes?|seconds?)\b"
     r"|\d\s*[ap]m\b"
     r"|^@\d+$"
-    r"|^\d{8,}$",
+    r"|^\d{9,}$",
     re.IGNORECASE)
+
+# YYYYMMDD. Git reads a bare eight-digit number as "now" (it takes one for a
+# date only when a time of day follows it), so the digest came back empty
+# without a word. Here it is the day it says, like 2026-10-14: _since_to_arg
+# turns it into that day, check_date refuses one that is not a real day.
+_COMPACT_DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
 
 # An ISO-looking calendar date (optionally followed by a time). These are
 # the values git's fuzzy parser gets WRONG without complaint: it turned
@@ -117,6 +143,31 @@ def _known_date_word(word: str) -> bool:
 _COUNT_WORDS = ("last", *_NUMBER_WORDS)
 
 
+# A numeric date with its year, wherever it stands in a value: 2026-10-12,
+# 2026/10/12, 10/12/2026, 12.10.2026.
+_NUMBER_DATE_RE = re.compile(
+    r"\b(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{4})\b")
+# A time of day ("09:00:00", "5pm"): its numbers are not a day of the month.
+_CLOCK_RE = re.compile(r"\d{1,2}:\d{2}(?::\d{2})?|\d{1,2}\s*[ap]m\b",
+                       re.IGNORECASE)
+
+
+def _names_its_day(s: str) -> bool:
+    """Does `s` pin a calendar day by its date, whatever weekday it also
+    names? A numeric date (2026-10-12, 10/12/2026), or a month name next to a
+    day of the month: "Sun Oct 18 09:00:00 2026 -0500" (what `git log` prints,
+    and `--since "$(git log -1 --format=%cd)"` pastes), "Sun, 18 Oct 2026"
+    (RFC 2822), "monday 12 october". Git reads the date and ignores the
+    weekday (even a wrong one), so there is nothing to warn about."""
+    if _NUMBER_DATE_RE.search(s):
+        return True
+    words = re.findall(r"[a-z]+|[0-9]+", _CLOCK_RE.sub(" ", s.lower()))
+    return (any(len(w) >= 3 and any(name.startswith(w) for name in _MONTHS)
+                for w in words)
+            and any(len(w) <= 2 and w.isdigit() and 1 <= int(w) <= 31
+                    for w in words))
+
+
 def _skipped_weekday(s: str) -> str | None:
     """The first weekday name in `s` that git will skip, else None.
 
@@ -145,7 +196,7 @@ def check_date(value: str) -> str | None:
     s = (value or "").strip()
     if not s:
         return None
-    m = _ISO_DATE_RE.match(s)
+    m = _ISO_DATE_RE.match(s) or _COMPACT_DATE_RE.match(s)
     if m:
         y, mo, d = (int(g) for g in m.groups())
         try:
@@ -160,7 +211,7 @@ def check_date(value: str) -> str | None:
                 f"{', '.join(unknown)}); git will guess — probably 'now'. "
                 f"Try 'yesterday', '3 days ago', 'last monday' or 2026-10-14.")
     day = _skipped_weekday(s)
-    if day:
+    if day and not _names_its_day(s):
         return (f"'{s}': git skips a weekday name unless 'last' or a number "
                 f"comes right before it (a bare '{day}' means today). Use "
                 f"'last {day}' for the most recent {day.capitalize()} before "
@@ -203,6 +254,18 @@ def _calendar_day(value: str) -> datetime.date | None:
         return None
 
 
+def _compact_day(value: str) -> datetime.date | None:
+    """The day a bare YYYYMMDD stands for, else None (also when the digits
+    are no day: 20261345)."""
+    m = _COMPACT_DATE_RE.match(value)
+    if not m:
+        return None
+    try:
+        return datetime.date(*(int(g) for g in m.groups()))
+    except ValueError:
+        return None
+
+
 def _since_to_arg(since: str, end: bool = False) -> str:
     """Normalize a `since`/`until` value for git.
 
@@ -215,13 +278,15 @@ def _since_to_arg(since: str, end: bool = False) -> str:
     15th).
 
     The calendar words (today, yesterday, N days ago, N weeks ago) are
-    turned into the explicit local date here, see _calendar_day; any other
-    word is passed to git VERBATIM — git does the date math, in its own
-    local timezone, exactly as it would for the user typing it:
+    turned into the explicit local date here, see _calendar_day, and so is a
+    bare YYYYMMDD (see _COMPACT_DATE_RE); any other word is passed to git
+    VERBATIM — git does the date math, in its own local timezone, exactly as
+    it would for the user typing it:
 
         yesterday      -> "2026-10-16 00:00"     (end: "2026-10-16 23:59:59")
         3 days ago     -> "2026-10-14 00:00"     (today is 2026-10-17)
         2026-10-14     -> "2026-10-14 00:00"     (end: "2026-10-14 23:59:59")
+        20261014       -> "2026-10-14 00:00"
         last monday    -> "last monday 00:00"
 
     Values that already carry a time ("2026-10-14 15:30", "noon", "now",
@@ -231,6 +296,8 @@ def _since_to_arg(since: str, end: bool = False) -> str:
     if not s or _HAS_TIME_RE.search(s):
         return s
     day = _calendar_day(s)
+    if day is None:
+        day = _compact_day(s)
     if day is not None:
         s = day.isoformat()
     return f"{s} 23:59:59" if end else f"{s} 00:00"
@@ -332,7 +399,7 @@ def commits_since(root: str, since: str, author: str | None = None,
         # Second opinion: the shas git itself lists for the same range.
         # Asked AFTER the log, so a commit made in between can only add.
         real = set(_git(root, "rev-list", *window, "HEAD").split())
-    except GitNotFound:
+    except (GitNotFound, GitTimeout):
         raise
     except RuntimeError as e:
         # empty repo (no commits yet) -> no history, not an error
@@ -372,7 +439,7 @@ def uncommitted(root: str) -> list[str]:
 def default_author(root: str) -> str:
     try:
         return _git(root, "config", "user.email").strip()
-    except GitNotFound:
+    except (GitNotFound, GitTimeout):
         raise
     except RuntimeError:
         return ""
@@ -382,7 +449,7 @@ def repo_name(root: str) -> str:
     try:
         out = _git(root, "rev-parse", "--show-toplevel").strip()
         return os.path.basename(out)
-    except GitNotFound:
+    except (GitNotFound, GitTimeout):
         raise
     except RuntimeError:
         pass
@@ -390,7 +457,7 @@ def repo_name(root: str) -> str:
     # one): name it after its git directory, "project.git" -> "project".
     try:
         git_dir = _git(root, "rev-parse", "--git-dir").strip()
-    except GitNotFound:
+    except (GitNotFound, GitTimeout):
         raise
     except RuntimeError:
         return root

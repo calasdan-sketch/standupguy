@@ -491,6 +491,7 @@ class TestServeShape(unittest.TestCase):
     def test_bad_date_is_a_400_not_a_500(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.get("/digest?since=2026-13-45")
+        self.addCleanup(cm.exception.close)
         self.assertEqual(cm.exception.code, 400)
         self.assertIn("not a valid date", cm.exception.read().decode())
 

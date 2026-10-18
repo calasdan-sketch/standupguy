@@ -40,6 +40,7 @@ standupguy --all                    # everyone
 standupguy --push-slack             # POST to AUTOSTANDUP_SLACK_WEBHOOK
 standupguy mcp                      # MCP server on stdio
 standupguy serve                    # HTTP bridge for Activepieces / workflow tools (this computer only)
+standupguy serve --port 9000        # ...on another port (default 8765)
 STANDUPGUY_TOKEN=... standupguy serve --host 0.0.0.0   # ...reachable from other machines (token required)
 ```
 
@@ -60,14 +61,26 @@ a request to `serve` or in an argument of an `mcp` tool (`until=`).
 If standard output is closed (`standupguy >&-`) the digest and the JSON
 have nowhere to go: one `error: standard output is closed ...` line and
 exit code 1, not a traceback, and `mcp` says the same before it reads a
-request. `--push-slack` and `serve` do not need it and still run.
+request. `--push-slack` and `serve` do not need it and still run. `mcp`
+needs standard input too: started with it closed (`standupguy mcp <&-`)
+there is no client to read a request from, so it says `error: standard input
+is closed, so there are no requests to read` and exits with code 2.
 
 Output piped into something that stops reading early
-(`standupguy --week | head -1`) ends quietly: exit code 1, no traceback.
-On Windows too, where a closed pipe is not a broken-pipe error but a plain
-`OSError` (errno 22) that shows up when the output is flushed. So does
-`mcp` when its client goes away, and `serve` when a client hangs up
-mid-response.
+(`standupguy --week | head -1`) never ends in a traceback. If the reader is
+already gone when the output is written, or goes away part-way through it,
+standupguy stops quietly with exit code 1. A digest that fits in the pipe is
+written whole and the exit code is 0 (a shell reports the last command's
+code, `head`'s here, unless you `set -o pipefail`). Windows reports a closed
+pipe not as a broken-pipe error but as a plain `OSError` (errno 22) when the
+output is flushed; that ends the same way. `mcp` ends quietly with exit code
+1 when the pipe it answers on has been closed, and `serve` shrugs off a
+client that hangs up mid-response.
+
+The digest is the history of the branch that is checked out
+(`git log HEAD`): a commit made yesterday on another branch, or one that is
+not merged yet, is not in it. `--all` means every author, not every branch.
+Check the branch out to see its work (`git switch feature/login`).
 
 `--author` matches like you'd expect, not like a regex: a case-insensitive
 substring of the author **name or email** (`calas`, `DAN@EXAMPLE.COM`,
@@ -85,6 +98,9 @@ Request piece can pull it on a schedule:
 ```bash
 standupguy serve --root /path/to/repo   # localhost:8765
 ```
+
+`--port N` picks another port (default 8765); `--port 0` lets the system
+choose a free one, and the line `serve` prints when it starts says which.
 
 - `GET /digest?since=yesterday&until=&author=&all=&format=json|markdown`
 - `GET /week?since=&until=&author=&all=&format=json|markdown`
@@ -252,6 +268,11 @@ export AUTOSTANDUP_API_KEY="<your key>"
   (`git clone --bare`, the copy on a server) works: it has no working tree,
   so it never has an *In progress* section, and it is named after its
   folder (`project.git` is `project`).
+- **A git that does not answer:** every git command is given 60 seconds. When
+  one takes longer (a repository on a network drive that went away, say) the
+  digest ends with one line, `error: git log did not finish within 60
+  seconds - ...`, and exit code 2, not a traceback. `mcp` answers that
+  request with an `isError` result and `serve` with a `500`, and both go on.
 - **MCP server:** exposes `what_did_i_ship {since?, until?, author?, all?,
   root?}` so your coding agent can answer "what did I ship this week" from
   local git. The server only reads the repo(s) it was started with
@@ -312,8 +333,13 @@ as if you had typed `--since="last monday 00:00"`:
 | `yesterday` | `2026-10-16 00:00` | `2026-10-16 23:59:59` |
 | `today`, `3 days ago`, `2 weeks ago` | `2026-10-17 00:00`, `2026-10-14 00:00`, `2026-10-03 00:00` | the same days, at `23:59:59` |
 | `last monday`, `3 months ago` | `last monday 00:00`, … | `last monday 23:59:59`, … |
-| `2026-10-14` | `2026-10-14 00:00` | `2026-10-14 23:59:59` |
-| `2026-10-14 15:30`, `noon`, `now`, `2 hours ago`, `@1792128212` | unchanged | unchanged |
+| `2026-10-14`, `20261014` | `2026-10-14 00:00` | `2026-10-14 23:59:59` |
+| `2026-10-14 15:30`, `noon`, `now`, `2 hours ago`, `@1792128212`, `1792128212` | unchanged | unchanged |
+
+A bare eight-digit number such as `20261014` is the day it says, like
+`2026-10-14` (git itself takes it for *now*, which leaves the digest empty
+without a word). A number of nine or more digits is a Unix timestamp, as it
+is for git.
 
 **Limit:** the words git still works out itself (weekday names, `N months
 ago`, `N years ago`) can be an hour off across a clock change - or, in the
@@ -325,13 +351,17 @@ number (`last monday`, `2 mondays ago`). Anywhere else it skips the word,
 so a bare `--since monday` (also `this monday`, `monday 9am`) means *today*:
 on a Saturday that leaves out the whole week. `standupguy` warns on stderr
 (one line for each option), still runs the value as typed, and suggests
-`last monday` or a date. `serve` and `mcp` take the word the way git does,
-without a warning.
+`last monday` or a date. There is no warning when the value also gives its
+date - `monday 2026-10-12`, `Mon Oct 12`, or git's own `Sun Oct 18 09:00:00
+2026 -0500`, as `git log` prints it - because git reads the date and ignores
+the weekday. `serve` and `mcp` take the word the way git does, without a
+warning.
 
 Git's parser is also *fuzzy*: it turned `2026-13-45` into October 13 and
 `notadate` into "now" without a word. `standupguy` refuses an
-ISO-looking date that is not a real date (exit 2) and warns on stderr
-when a value contains words git does not understand, then lets git guess.
+ISO-looking date that is not a real date (exit 2; so is `20261345`) and warns
+on stderr when a value contains words git does not understand, then lets git
+guess.
 
 Day headers (`## 2026-10-14`) and the `date` of a commit in `--format
 json` are the **committer date** - the date `--since` and `--until` filter

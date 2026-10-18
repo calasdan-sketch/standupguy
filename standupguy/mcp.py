@@ -27,7 +27,7 @@ from . import digest as digest_mod
 from . import gitlog as gitlog_mod
 from . import stdio as stdio_mod
 
-SERVER_INFO = {"name": "standupguy", "version": "0.1.2"}
+SERVER_INFO = {"name": "standupguy", "version": "0.1.3"}
 
 TOOL_NAME = "what_did_i_ship"
 
@@ -205,10 +205,21 @@ def handle(request, roots) -> dict | None:
 
 
 def serve(roots=None, stdin=None, stdout=None) -> int:
-    """Newline-delimited JSON-RPC over stdio, UTF-8 bytes on the wire."""
+    """Newline-delimited JSON-RPC over stdio, UTF-8 bytes on the wire.
+
+    Returns 2, with one line on stderr and before a request is read, when
+    standard input is closed (standard output closed raises
+    stdio.StdoutClosed first)."""
     roots = _as_roots(roots)
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else stdio_mod.stdout()
+    if stdin is None:
+        # started with standard input shut (`standupguy mcp <&-`; pythonw on
+        # Windows): sys.stdin is None, and the first read would end in an
+        # AttributeError traceback. There is no client to talk to.
+        print("error: standard input is closed, so there are no requests to "
+              "read", file=sys.stderr)
+        return 2
     reader = getattr(stdin, "buffer", stdin)
     writer = getattr(stdout, "buffer", stdout)
     while True:
