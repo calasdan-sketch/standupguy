@@ -16,7 +16,7 @@ class Commit:
     sha: str
     author: str
     email: str
-    date: str          # YYYY-MM-DD in the LOCAL timezone of this machine
+    date: str          # committer date, YYYY-MM-DD in the LOCAL timezone of this machine
     subject: str
     files: list[str]
     pr_number: int | None = None
@@ -24,6 +24,15 @@ class Commit:
 
 class GitNotFound(RuntimeError):
     """`git` is not on PATH (or not installed)."""
+
+
+class GitError(RuntimeError):
+    """A git command exited with an error. str() is a one-line summary (git's
+    message cut at 200 characters); `stderr` is everything git said."""
+
+    def __init__(self, args_text: str, stderr: str):
+        super().__init__(f"git {args_text} failed: {stderr.strip()[:200]}")
+        self.stderr = stderr.strip()
 
 
 GIT_NOT_FOUND_MESSAGE = (
@@ -45,8 +54,7 @@ def _git(root: str, *args: str, env: dict | None = None) -> str:
     except FileNotFoundError:
         raise GitNotFound(GIT_NOT_FOUND_MESSAGE) from None
     if p.returncode != 0:
-        err = p.stderr.decode("utf-8", "replace").strip()[:200]
-        raise RuntimeError(f"git {' '.join(args)} failed: {err}")
+        raise GitError(" ".join(args), p.stderr.decode("utf-8", "replace"))
     return p.stdout.decode("utf-8", "replace")
 
 
@@ -119,6 +127,41 @@ def check_date(value: str) -> str | None:
     return None
 
 
+# today, yesterday, N days ago, N weeks ago (git also takes "2.days.ago")
+_CALENDAR_DAY_RE = re.compile(
+    r"^(?:(today)|(yesterday)|([0-9]{1,6})[\s.]+(day|week)s?[\s.]+ago)$",
+    re.IGNORECASE)
+
+
+def _today() -> datetime.date:
+    """Today's date on this machine. A function so a test can pick the day."""
+    return datetime.date.today()
+
+
+def _calendar_day(value: str) -> datetime.date | None:
+    """The local calendar day a bare `today`, `yesterday`, `N days ago` or
+    `N weeks ago` stands for, else None.
+
+    Git counts these in blocks of 24 hours from now, which is a day too early
+    or too late in the first or last hour after midnight on the day after a
+    clock change: at 00:10 on the Monday after the clocks went forward,
+    git's "yesterday" is Saturday. Calendar arithmetic does not care how long
+    the days were."""
+    m = _CALENDAR_DAY_RE.match(value)
+    if not m:
+        return None
+    today = _today()
+    try:
+        if m.group(1):
+            return today
+        if m.group(2):
+            return today - datetime.timedelta(days=1)
+        days = int(m.group(3)) * (7 if m.group(4).lower() == "week" else 1)
+        return today - datetime.timedelta(days=days)
+    except OverflowError:       # before year 1: leave it to git
+        return None
+
+
 def _since_to_arg(since: str, end: bool = False) -> str:
     """Normalize a `since`/`until` value for git.
 
@@ -128,12 +171,15 @@ def _since_to_arg(since: str, end: bool = False) -> str:
     morning's commits. For a standup you want whole days, so any value
     without an explicit time gets " 00:00" appended (or " 23:59:59" when
     it is the END of the range, so `--until 2026-10-15` includes the
-    15th) and the words themselves are passed to git VERBATIM — git does
-    the date math, in its own local timezone, exactly as it would for the
-    user typing it:
+    15th).
 
-        yesterday      -> "yesterday 00:00"      (end: "yesterday 23:59:59")
-        3 days ago     -> "3 days ago 00:00"
+    The calendar words (today, yesterday, N days ago, N weeks ago) are
+    turned into the explicit local date here, see _calendar_day; any other
+    word is passed to git VERBATIM — git does the date math, in its own
+    local timezone, exactly as it would for the user typing it:
+
+        yesterday      -> "2026-10-16 00:00"     (end: "2026-10-16 23:59:59")
+        3 days ago     -> "2026-10-14 00:00"     (today is 2026-10-17)
         2026-10-14     -> "2026-10-14 00:00"     (end: "2026-10-14 23:59:59")
         last monday    -> "last monday 00:00"
 
@@ -143,6 +189,9 @@ def _since_to_arg(since: str, end: bool = False) -> str:
     s = (since or "").strip()
     if not s or _HAS_TIME_RE.search(s):
         return s
+    day = _calendar_day(s)
+    if day is not None:
+        s = day.isoformat()
     return f"{s} 23:59:59" if end else f"{s} 00:00"
 
 
@@ -180,9 +229,14 @@ def author_matches(commit: Commit, needle: str | None) -> bool:
 # record and writes a fake one (fake sha, author, date), or shifts the
 # fields of a real one. The token is picked at run time, after the commit
 # was made: no commit can contain it. (token="" is the bare format.)
+#
+# The date is the COMMITTER date (%cd), the one --since and --until filter on,
+# so a commit is never labelled with a day outside the window that found it.
+# (The author date, %ad, survives a rebase, an amend or a cherry-pick; the
+# committer date does not.)
 def _log_format(token: str = "") -> str:
     rs, us = "%x1e" + token, "%x1f" + token
-    return f"--pretty=format:{rs}%H{us}%an{us}%ae{us}%ad{us}%s"
+    return f"--pretty=format:{rs}%H{us}%an{us}%ae{us}%cd{us}%s"
 
 
 # What a record must look like to be believed: a hex sha (the exact set of
@@ -225,7 +279,8 @@ def commits_since(root: str, since: str, author: str | None = None,
     author: see author_matches."""
     # --date=format-local: the day header is the LOCAL date of this
     # machine, not the committer's timezone (--date=short), so a 23:30
-    # PDT commit lands on the right day for a user in Winnipeg.
+    # PDT commit lands on the right day for a user in Winnipeg. It applies
+    # to %cd, the committer date (see _log_format).
     window = [f"--since={_since_to_arg(since)}"]
     if until:
         window.append(f"--until={_since_to_arg(until, end=True)}")
@@ -250,7 +305,11 @@ def commits_since(root: str, since: str, author: str | None = None,
 
 
 def uncommitted(root: str) -> list[str]:
-    """Repo-relative paths with uncommitted changes."""
+    """Repo-relative paths with uncommitted changes. A bare repository has no
+    working tree (and `git status` refuses to run there): nothing in it can
+    be uncommitted."""
+    if _git(root, "rev-parse", "--is-inside-work-tree").strip() != "true":
+        return []
     # -z: paths come back raw and NUL-separated — no C-style quoting of
     # non-ASCII ("caf\303\251.py"), spaces or quotes to undo.
     out = _git(root, "status", "--porcelain", "-z")
@@ -285,4 +344,19 @@ def repo_name(root: str) -> str:
     except GitNotFound:
         raise
     except RuntimeError:
+        pass
+    # No working tree (a bare repository, or the .git folder of a normal
+    # one): name it after its git directory, "project.git" -> "project".
+    try:
+        git_dir = _git(root, "rev-parse", "--git-dir").strip()
+    except GitNotFound:
+        raise
+    except RuntimeError:
         return root
+    path = os.path.abspath(os.path.join(root, git_dir))
+    name = os.path.basename(path)
+    if name == ".git":
+        name = os.path.basename(os.path.dirname(path))
+    elif name.endswith(".git"):
+        name = name[:-4]
+    return name or root

@@ -25,8 +25,9 @@ import sys
 
 from . import digest as digest_mod
 from . import gitlog as gitlog_mod
+from . import stdio as stdio_mod
 
-SERVER_INFO = {"name": "standupguy", "version": "0.1.0"}
+SERVER_INFO = {"name": "standupguy", "version": "0.1.1"}
 
 TOOL_NAME = "what_did_i_ship"
 
@@ -207,7 +208,7 @@ def serve(roots=None, stdin=None, stdout=None) -> int:
     """Newline-delimited JSON-RPC over stdio, UTF-8 bytes on the wire."""
     roots = _as_roots(roots)
     stdin = stdin if stdin is not None else sys.stdin
-    stdout = stdout if stdout is not None else sys.stdout
+    stdout = stdout if stdout is not None else stdio_mod.stdout()
     reader = getattr(stdin, "buffer", stdin)
     writer = getattr(stdout, "buffer", stdout)
     while True:

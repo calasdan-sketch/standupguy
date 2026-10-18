@@ -37,6 +37,7 @@ class TestServe(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
+        cls.server.server_close()
 
     def test_health(self):
         status, ctype, body = get(self.port, "/health")

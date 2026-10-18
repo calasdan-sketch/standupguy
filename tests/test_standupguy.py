@@ -165,6 +165,7 @@ class FakeModel:
 
     def stop(self):
         self.server.shutdown()
+        self.server.server_close()
 
 
 class TestDraft(unittest.TestCase):

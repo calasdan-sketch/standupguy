@@ -2,7 +2,8 @@
 
 Groups by conventional-commit prefix (feat/fix/docs/refactor/test/chore),
 falls back to an 'other' bucket. Merge commits surface as shipped PRs.
-Day headers are the local date of this machine (see gitlog).
+Day headers are the committer date of each commit as a local calendar day
+of this machine (see gitlog).
 """
 
 from __future__ import annotations

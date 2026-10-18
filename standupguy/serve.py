@@ -26,17 +26,44 @@ Anything that fails inside the bridge (the repo moved, git is gone) is a 500
 with a generic message: git's command line and your paths stay out of the
 response, and go to the server's stderr instead, one line per failure.
 
-Binds 127.0.0.1 by default. Only open --host 0.0.0.0 if you know why.
+Who may ask. The commit history is private (every author, e-mail address and
+subject), so the bridge answers this computer only, and only a request that
+names it:
+
+  - It listens on 127.0.0.1 by default.
+  - The Host header must be localhost, 127.0.0.1 or [::1] (or the --host
+    address) on the bridge's own port. Any other name is a 403: a web page you
+    open cannot read your history by pointing its own name at your computer
+    (DNS rebinding). Add a name with --allow-host NAME. HTTP/1.1 needs exactly
+    one Host header (else 400); an old HTTP/1.0 client may omit it.
+  - An Origin header (a browser's cross-site request) must name an allowed
+    host too, and no CORS permission is ever granted.
+  - --token TOKEN (or STANDUPGUY_TOKEN, 16 or more printable characters)
+    makes every request except /health send `Authorization: Bearer TOKEN` (or
+    ?token=TOKEN): without it, a 401.
+
+To reach the bridge from another machine (Activepieces or n8n elsewhere, or in
+Docker) it must listen on a network address AND have a token:
+
+    STANDUPGUY_TOKEN=<random> standupguy serve --host 0.0.0.0
+
+`serve` refuses to start on a non-loopback address without a token (exit 2)
+unless --insecure-allow-lan is given, and then it warns on stderr. A caller
+that uses a DNS name (host.docker.internal, devbox.lan) needs --allow-host;
+a Host that is an IP address is accepted on a network bind.
 """
 
 from __future__ import annotations
 
 import errno
+import hmac
+import ipaddress
 import json
 import os
+import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote_plus
 
 from . import digest as digest_mod
 from . import gitlog as gitlog_mod
@@ -54,6 +81,143 @@ _TRUE = {"1", "true", "yes", "on"}
 # What a client is told when a request fails inside the bridge.
 INTERNAL_ERROR = "internal error (the details are in the server's log)"
 
+#: The names of this computer a request may use in its Host header.
+LOOPBACK_NAMES = ("localhost", "127.0.0.1", "[::1]")
+
+# --host values that mean "every network interface".
+_WILDCARD_HOSTS = ("", "0.0.0.0", "::")
+
+#: A token is at least this many characters.
+MIN_TOKEN_CHARS = 16
+
+# host or [ipv6], optionally :port. Nothing else is a Host header.
+_HOST_RE = re.compile(r"([A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::([0-9]{1,5}))?")
+
+
+class ServeConfigError(ValueError):
+    """`serve` was asked for something unsafe or invalid: a token that is too
+    short, a network address without a token, a nonsense --allow-host. The
+    message is one line for a person and never contains the token."""
+
+
+def parse_host(value):
+    """(name, port) of a Host header or an --allow-host entry: the name
+    lower-cased and without one trailing dot, the port an int or None. None
+    when the text is not a host[:port] (userinfo, a path, spaces ...)."""
+    m = _HOST_RE.fullmatch(value or "")
+    if not m:
+        return None
+    name, port = m.group(1).lower(), m.group(2)
+    if not name.startswith("[") and name.endswith("."):
+        name = name[:-1]
+    if not name:
+        return None
+    if port is not None:
+        port = int(port)
+        if not 0 < port < 65536:
+            return None
+    return name, port
+
+
+def _is_ip(name: str) -> bool:
+    try:
+        ipaddress.ip_address(name[1:-1] if name.startswith("[") else name)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_loopback(address: str) -> bool:
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
+
+
+def _check_token(token):
+    """The token as bytes (or None for no token); ServeConfigError when it
+    is too weak to guard a network address."""
+    if token is None:
+        return None
+    if not (len(token) >= MIN_TOKEN_CHARS and token.isascii()
+            and token.isprintable() and " " not in token):
+        raise ServeConfigError(
+            f"the token must be at least {MIN_TOKEN_CHARS} printable ASCII "
+            "characters without spaces (make one with: python -c "
+            "\"import secrets; print(secrets.token_urlsafe(24))\")")
+    return token.encode("ascii")
+
+
+def _check_allow_hosts(entries) -> list:
+    parsed = []
+    for entry in entries or ():
+        item = parse_host(entry.strip()) if isinstance(entry, str) else None
+        if item is None:
+            raise ServeConfigError(
+                f"--allow-host {entry!r} is not a host name (like "
+                "devbox.lan or host.docker.internal:8765)")
+        parsed.append(item)
+    return parsed
+
+
+class Guard:
+    """Who may ask one server: the Host, Origin and token rules."""
+
+    def __init__(self, port: int, bind_host: str, lan: bool, token, allowed):
+        self.port = port
+        self.lan = lan                  # listening beyond this computer
+        self.token = token              # bytes, or None for no token
+        self.names = set(LOOPBACK_NAMES)
+        if bind_host.lower() not in _WILDCARD_HOSTS:
+            bound = parse_host(bind_host)
+            if bound and bound[1] is None:
+                self.names.add(bound[0])
+        self.any_port = {n for n, p in allowed if p is None}
+        self.with_port = {(n, p) for n, p in allowed if p is not None}
+
+    def host_ok(self, value) -> bool:
+        parsed = parse_host(value)
+        if parsed is None:
+            return False
+        name, port = parsed
+        if name in self.names or (self.lan and _is_ip(name)):
+            # our own names, and on a network bind any IP address (a page
+            # cannot rebind an address, only a name): on OUR port
+            return port == self.port or (port is None and self.port == 80)
+        return name in self.any_port or (name, port) in self.with_port
+
+    def origin_ok(self, value) -> bool:
+        m = re.fullmatch(r"https?://([^/?#]+)", value or "", re.IGNORECASE)
+        return bool(m) and self.host_ok(m.group(1))
+
+    def token_ok(self, authorization, queried) -> bool:
+        if self.token is None:
+            return True
+        given = list(queried)
+        scheme, _, rest = (authorization or "").partition(" ")
+        if scheme.lower() == "bearer":
+            given.append(rest.strip())
+        ok = False
+        for candidate in given:         # every one is compared, in constant time
+            ok = hmac.compare_digest(candidate.encode("utf-8", "replace"),
+                                     self.token) or ok
+        return ok
+
+
+def _redact_token(target: str) -> str:
+    """The request target with the value of every `token` parameter hidden:
+    the query string may carry the token and the operator's log must not."""
+    path, sep, query = target.partition("?")
+    if not sep:
+        return target
+    items = []
+    for item in query.split("&"):
+        name, eq, _value = item.partition("=")
+        if eq and unquote_plus(name).lower() == "token":
+            item = f"{name}=***"
+        items.append(item)
+    return path + "?" + "&".join(items)
+
 
 class ThreadedBridgeServer(ThreadingHTTPServer):
     """ThreadingHTTPServer with a per-connection socket timeout.
@@ -70,6 +234,8 @@ class ThreadedBridgeServer(ThreadingHTTPServer):
     allow_reuse_address = os.name != "nt"
 
     roots: list   # the repos this server answers for (set by make_server)
+    guard: "Guard"           # who may ask (set by make_server)
+    lan_without_token: bool  # listening beyond this computer, no token
 
     def get_request(self):
         sock, addr = self.socket.accept()
@@ -85,13 +251,39 @@ class ThreadedBridgeServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
-def make_server(root, host: str = "127.0.0.1",
-                port: int = 8765) -> ThreadedBridgeServer:
+def make_server(root, host: str = "127.0.0.1", port: int = 8765, *,
+                token=None, allow_hosts=(),
+                allow_lan: bool = False) -> ThreadedBridgeServer:
     """Build the configured bridge server (used by serve() and by tests).
     `root` is one repo path or a list of them. The roots live on the
-    server, not on the Handler class, so two servers never share them."""
-    server = ThreadedBridgeServer((host, port), Handler)
+    server, not on the Handler class, so two servers never share them.
+
+    The address is bound first and only then judged: a bridge that would
+    answer beyond this computer (any non-loopback address) needs a `token`,
+    or `allow_lan=True`; otherwise ServeConfigError is raised and nothing
+    ever listens. `allow_hosts` adds Host names (see Guard)."""
+    secret = _check_token(token)
+    allowed = _check_allow_hosts(allow_hosts)
+    server = ThreadedBridgeServer((host, port), Handler,
+                                  bind_and_activate=False)
+    try:
+        server.server_bind()
+        address = server.server_address[0]
+        lan = not _is_loopback(address)
+        if lan and secret is None and not allow_lan:
+            raise ServeConfigError(
+                f"refusing to listen on {address}: anyone who can reach this "
+                "port could read your commit history. Set a token "
+                "(STANDUPGUY_TOKEN=<16+ random characters>, or --token) and "
+                "send it as 'Authorization: Bearer <token>', or pass "
+                "--insecure-allow-lan to serve without one")
+        server.server_activate()
+    except BaseException:
+        server.server_close()
+        raise
     server.roots = [root] if isinstance(root, str) else list(root)
+    server.guard = Guard(server.server_address[1], host, lan, secret, allowed)
+    server.lan_without_token = lan and secret is None
     return server
 
 
@@ -148,12 +340,15 @@ def _payload(roots: list, query: dict, weekly: bool) -> tuple[int, str, str]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _send(self, status: int, ctype: str, body: str) -> None:
+    def _send(self, status: int, ctype: str, body: str,
+              headers=()) -> None:
         data = body.encode("utf-8")
         try:
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
+            for name, value in headers:
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(data)
         except OSError as e:       # the client hung up mid-response
@@ -182,11 +377,62 @@ class Handler(BaseHTTPRequestHandler):
         terminal only with its control characters made visible."""
         detail = " ".join(f"{type(e).__name__}: {e}".split())
         print(stdio_mod.printable(
-            f"error: {self.command} {self.path}: {detail}"), file=sys.stderr)
+            f"error: {self.command} {_redact_token(self.path)}: {detail}"),
+            file=sys.stderr)
+
+    def _refuse(self, status: int, message: str, why: str,
+                headers=()) -> None:
+        """Answer a request that may not be served: the client gets a JSON
+        error, the operator one line on stderr. The line carries the path
+        only - the query string may hold the token - and what the client
+        sent comes out with its control characters made visible."""
+        path = urlparse(self.path).path
+        print(stdio_mod.printable(" ".join(
+            f"refused: {self.command} {path}: {why}".split())),
+            file=sys.stderr)
+        self._send(status, "application/json",
+                   json.dumps({"error": message}), headers)
+
+    def _admit(self, path: str, query: dict) -> bool:
+        """May this request be served? Host, then Origin, then the token."""
+        guard = self.server.guard
+        hosts = self.headers.get_all("Host") or []
+        # HTTP/1.1 needs exactly one Host header. An old HTTP/1.0 client may
+        # leave it out; a browser (the DNS-rebinding risk) never does.
+        legacy = self.request_version in ("HTTP/0.9", "HTTP/1.0")
+        if len(hosts) > 1 or (not hosts and not legacy):
+            self._refuse(400, "exactly one Host header is required",
+                         "no Host header, or more than one")
+            return False
+        if hosts and not guard.host_ok(hosts[0]):
+            shown = stdio_mod.printable(hosts[0])[:100]
+            self._refuse(
+                403, f"host not allowed: {shown!r} (to permit this name "
+                     "start the bridge with --allow-host)",
+                f"host not allowed ({shown!r})")
+            return False
+        origins = self.headers.get_all("Origin") or []
+        if origins and (len(origins) != 1 or not guard.origin_ok(origins[0])):
+            shown = stdio_mod.printable(origins[0])[:100]
+            self._refuse(403, "origin not allowed",
+                         f"origin not allowed ({shown!r})")
+            return False
+        if path != "/health" and not guard.token_ok(
+                self.headers.get("Authorization", ""),
+                query.get("token", [])):
+            self._refuse(
+                401, "a token is required: send 'Authorization: Bearer "
+                     "<token>' (or ?token=<token>)",
+                "missing or wrong token",
+                [("WWW-Authenticate", 'Bearer realm="standupguy"')])
+            return False
+        return True
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        if not self._admit(parsed.path, query):
+            return
         if parsed.path == "/health":
             self._send(200, "application/json", '{"ok": true}')
         elif parsed.path == "/digest":
@@ -210,23 +456,36 @@ def _listen_error(e: Exception, host: str, port: int) -> str:
     return f"cannot listen on {host}:{port}: {why}"
 
 
-def serve(root, host: str = "127.0.0.1", port: int = 8765) -> int:
+def serve(root, host: str = "127.0.0.1", port: int = 8765, *,
+          token=None, allow_hosts=(), allow_lan: bool = False) -> int:
     """Serve one repo path or a list of them until Ctrl-C. Returns 2 (with
-    a one-line error) when the address cannot be bound."""
+    a one-line error) when the address cannot be bound or the setup is not
+    safe (see make_server)."""
     try:
-        server = make_server(root, host, port)
+        server = make_server(root, host, port, token=token,
+                             allow_hosts=allow_hosts, allow_lan=allow_lan)
+    except ServeConfigError as e:           # unsafe or invalid setup
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     except (OSError, OverflowError) as e:   # in use, not ours, bad port ...
         print(f"error: {_listen_error(e, host, port)}", file=sys.stderr)
         return 2
     roots = server.roots
     shown = roots[0] if len(roots) == 1 else \
         f"{len(roots)} repos ({', '.join(roots)})"
+    if server.lan_without_token:
+        print("warning: serving on a network address WITHOUT a token "
+              "(--insecure-allow-lan): anyone who can reach this port can "
+              f"read the commit history (authors, e-mail addresses, "
+              f"messages) of {shown}", file=sys.stderr)
     try:
         # inside the try: with nobody to read the banner (stdout is a closed
         # pipe) we leave, and give the port back on the way out
         print(f"standupguy serving {shown} on "
               f"http://{host}:{server.server_address[1]} "
-              f"(/digest, /week, /health)", flush=True)
+              f"(/digest, /week, /health)"
+              + (" - token required" if server.guard.token else ""),
+              flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
         pass

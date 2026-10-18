@@ -39,8 +39,19 @@ standupguy --author "teammate@co"   # filter (default: your git user)
 standupguy --all                    # everyone
 standupguy --push-slack             # POST to AUTOSTANDUP_SLACK_WEBHOOK
 standupguy mcp                      # MCP server on stdio
-standupguy serve                    # HTTP bridge for Activepieces / workflow tools
+standupguy serve                    # HTTP bridge for Activepieces / workflow tools (this computer only)
+STANDUPGUY_TOKEN=... standupguy serve --host 0.0.0.0   # ...reachable from other machines (token required)
 ```
+
+`--format json` prints the digest as JSON and is the finished output: it
+cannot be combined with `--draft` or `--push-slack` (an `error:` line and
+exit code 2, before git is run or anything is sent). Draft or post the
+Markdown instead.
+
+If standard output is closed (`standupguy >&-`) the digest and the JSON
+have nowhere to go: one `error: standard output is closed ...` line and
+exit code 1, not a traceback, and `mcp` says the same before it reads a
+request. `--push-slack` and `serve` do not need it and still run.
 
 Output piped into something that stops reading early
 (`standupguy --week | head -1`) ends quietly: exit code 1, no traceback.
@@ -90,8 +101,47 @@ has one section per repo, in the order given; the JSON becomes
 like `standupguy --format json` (one root keeps the flat object above, so
 a workflow that reads `slack_text` keeps working when you add a repo).
 Each repo's default `author` is its own `git config user.email`. A port
-that is already in use, or a `--root` that is not a git repo, is a
-one-line `error:` and exit code 2; the server does not start.
+that is already in use, a `--root` that is not a git repo, or a network
+address without a token (below), is a one-line `error:` and exit code 2;
+the server does not start.
+
+### Who can reach it
+
+Your commit history is private (every author, e-mail address and subject),
+so by default only your own computer can ask. `serve` listens on
+`127.0.0.1`, and it answers a request only when its `Host` header names the
+bridge: `localhost`, `127.0.0.1` or `[::1]` on the bridge's own port.
+Anything else is a `403`, so a web page you happen to open cannot read your
+history by pointing its own name at your computer (DNS rebinding). A
+browser's cross-site request (it carries an `Origin` header) must name an
+allowed host too, and the bridge never sends CORS permission. curl, n8n
+and Activepieces send no `Origin` and are not affected.
+
+To call it from another machine (Activepieces on a server, or in Docker)
+it must listen on a network address, and then it needs a token:
+
+```bash
+export STANDUPGUY_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(24))')"
+standupguy serve --host 0.0.0.0 --root /path/to/repo
+# the caller sends:  Authorization: Bearer <the token>     (or ?token=<the token>)
+```
+
+- Every request except `/health` has to carry the token, otherwise it is a
+  `401`. A token is at least 16 printable characters (stick to letters,
+  digits, `-` and `_` if you use `?token=`). Prefer the environment
+  variable: a `--token` argument shows up in the process list.
+- `serve --host 0.0.0.0` without `STANDUPGUY_TOKEN` (or `--token`) is
+  refused with exit code 2 and nothing listens. `--insecure-allow-lan`
+  overrides that, with a warning on stderr: use it only on a network you
+  trust completely.
+- A caller that reaches the bridge by a DNS name (`host.docker.internal`,
+  `devbox.lan`) gets a `403` until you allow the name:
+  `--allow-host host.docker.internal` (repeatable; `NAME:PORT` pins the
+  port). A Host that is an IP address is accepted when the bridge listens
+  on a network address.
+- The token is never printed or logged. A refused request is one line on
+  stderr: the path only, never the query string.
+- It is plain HTTP: keep the port off the public internet.
 
 [`workflows/activepieces-standup-digest.json`](workflows/activepieces-standup-digest.json)
 is a documented flow definition (it's a human-readable spec, not a native
@@ -165,6 +215,15 @@ export AUTOSTANDUP_API_KEY="<your key>"
 - **Multi-repo (`--root A --root B`):** one section per repo, in the
   order given, in every mode; `--format json` then returns
   `{"repos": [...]}` (a single `--root` keeps the flat object).
+- **Folders git will not use, and bare ones:** a `--root` that is not a
+  repository is `error: not a git repo: PATH` (exit code 2, for the digest,
+  `mcp` and `serve` alike). When git refuses the folder for another reason,
+  its own message is shown instead, on the same one line: for a repository
+  owned by another user that includes the `git config --global --add
+  safe.directory PATH` command that fixes it. A bare repository
+  (`git clone --bare`, the copy on a server) works: it has no working tree,
+  so it never has an *In progress* section, and it is named after its
+  folder (`project.git` is `project`).
 - **MCP server:** exposes `what_did_i_ship {since?, until?, author?, all?,
   root?}` so your coding agent can answer "what did I ship this week" from
   local git. The server only reads the repo(s) it was started with
@@ -192,6 +251,14 @@ export AUTOSTANDUP_API_KEY="<your key>"
   no channel-wide mentions. Jira/Confluence push
   is intentionally not built in — paste the Markdown, keep your tokens
   out of another integration.
+- **Secrets stay where you put them.** `--draft` sends the API key to the
+  endpoint you configured and nowhere else: it does not follow a redirect to
+  another address (a different scheme, host or port), it stops with an
+  `error:` line that says where the redirect pointed, and nothing is sent
+  there. A key an HTTP header cannot carry (a line break, a curly quote) is
+  refused before anything is sent. The API key, the login (`user:password@`)
+  and query string of the model URL, and the Slack webhook URL are never
+  shown in an error message.
 
 ## Date handling
 
@@ -199,27 +266,46 @@ Git's date parser fills in the **current time of day** for a bare date or
 a word (`--since=2026-10-14` run at 15:00 means 2026-10-14 15:00;
 `yesterday` means 24 hours ago) — silently dropping that morning's
 commits. For a standup you want whole days, so any `--since` value
-without a time of day gets ` 00:00` appended, any `--until` value without
-one gets ` 23:59:59` (**a bare `--until` date is inclusive**: `--since
-2026-10-14 --until 2026-10-15` is both days), and the words are handed to
-git **verbatim** — git does the date math, in its own local timezone,
-exactly as if you had typed `--since="yesterday 00:00"`:
+without a time of day starts at midnight, and any `--until` value without
+one ends at 23:59:59 (**a bare `--until` date is inclusive**: `--since
+2026-10-14 --until 2026-10-15` is both days).
 
-| you type | `--since` gets | `--until` gets |
+`today`, `yesterday`, `N days ago` and `N weeks ago` are worked out by
+`standupguy` as **whole local calendar days** and handed to git as an
+explicit date. (Git counts them in blocks of 24 hours back from now, which
+is the wrong day during the first or last hour after midnight on the day
+after a clock change: at 00:10 on the Monday after the clocks went
+forward, git's `yesterday` is Saturday.) Every other word is handed to git
+**verbatim** — git does the date math, in its own local timezone, exactly
+as if you had typed `--since="last monday 00:00"`:
+
+| you type (today is 2026-10-17) | `--since` gets | `--until` gets |
 |---|---|---|
-| `yesterday` | `yesterday 00:00` | `yesterday 23:59:59` |
-| `3 days ago`, `last monday`, `today` | `3 days ago 00:00`, … | `3 days ago 23:59:59`, … |
+| `yesterday` | `2026-10-16 00:00` | `2026-10-16 23:59:59` |
+| `today`, `3 days ago`, `2 weeks ago` | `2026-10-17 00:00`, `2026-10-14 00:00`, `2026-10-03 00:00` | the same days, at `23:59:59` |
+| `last monday`, `3 months ago` | `last monday 00:00`, … | `last monday 23:59:59`, … |
 | `2026-10-14` | `2026-10-14 00:00` | `2026-10-14 23:59:59` |
 | `2026-10-14 15:30`, `noon`, `now`, `2 hours ago`, `@1792128212` | unchanged | unchanged |
+
+**Limit:** the words git still works out itself (weekday names, `N months
+ago`, `N years ago`) can be an hour off across a clock change - or, in the
+first or last hour after midnight, a day. Give an explicit date
+(`--since 2026-03-08`) when the exact start matters.
 
 Git's parser is also *fuzzy*: it turned `2026-13-45` into October 13 and
 `notadate` into "now" without a word. `standupguy` refuses an
 ISO-looking date that is not a real date (exit 2) and warns on stderr
 when a value contains words git does not understand, then lets git guess.
 
-Day headers (`## 2026-10-14`) are the **local date on your machine**
-(`--date=format-local`), not the committer's timezone, so a teammate's
-23:30 PDT commit lands on the day you actually saw it.
+Day headers (`## 2026-10-14`) and the `date` of a commit in `--format
+json` are the **committer date** - the date `--since` and `--until` filter
+on, so a commit is never labelled with a day outside the window that found
+it - shown as the **local date on your machine** (`--date=format-local`),
+not in the committer's timezone, so a teammate's 23:30 PDT commit lands on
+the day you actually saw it. The author date (when the change was first
+written) is not used: a rebase, an amend or a cherry-pick changes the
+committer date and leaves the author date alone, and a commit you rebased
+today is today's work.
 
 ## Windows
 
@@ -244,13 +330,39 @@ gitconfig is never read) and the "model" and "client" are fakes on
 127.0.0.1. Covers the digest, `--author` matching, `--sprint` and
 `--until`, local-date headers, date validation, multi-repo output,
 hostile commit text (forged records, terminal escapes), the HTTP bridge
-(start-up errors, several repos, hang-ups, failing requests), bad model
+(start-up errors, several repos, hang-ups, failing requests, who may ask:
+Host and Origin checks, the token, the network-address refusal), bad model
 answers, Slack sanitizing and escaping, the MCP server (root confinement,
 invalid params, notifications, start-up check, UTF-8 wire under a cp1252
 console), closed pipes (real processes, and Linux stand-ins for Windows'
 errno-22 version of the error), the package metadata, a missing `git`,
-the cp1252 console path, and a check that no source or doc file hides an
-invisible character.
+the cp1252 console path, a check that no source or doc file hides an
+invisible character, and a check that nothing in the package or the suite
+needs more than Python 3.10. It also covers what a redirect or an error
+message may reveal (the API key, the Slack webhook), which date labels a
+commit, the `--format json` refusals, folders git refuses and bare
+repositories, a closed standard output, and the sdist and the wheel built
+from a clean copy of the tracked files (so a leftover `build/` folder
+cannot get in).
+
+Two groups of tests skip themselves, with the reason: the ones that read
+`pyproject.toml` need `tomllib` (Python 3.11+), and the ones that build the
+sdist and the wheel need a setuptools of 77 or later (with `packaging` 24.2
+or later) already installed - they work offline and download nothing.
+
+## Limitations
+
+- **Dates.** Weekday names (`last monday`), `N months ago` and `N years ago`
+  are worked out by git, not by `standupguy`; *Date handling* says what
+  that can get wrong around a clock change.
+- **Windows.** This release was developed and tested on Linux. What is
+  specific to Windows (a closed pipe that is not a `BrokenPipeError`, the
+  cp1252 console, UTF-8 on the MCP wire) is covered by Linux stand-ins, not
+  by a run on Windows.
+- **Line endings.** The repository's text files are committed with Windows
+  (CRLF) line endings and there is no `.gitattributes`: keep them when you
+  edit a file. On Linux and macOS `git diff` flags them as trailing
+  whitespace.
 
 ## License
 

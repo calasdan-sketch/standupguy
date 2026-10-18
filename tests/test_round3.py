@@ -18,10 +18,14 @@ import io
 import json
 import os
 import tempfile
-import tomllib
 import unittest
 from contextlib import redirect_stdout
 from datetime import datetime
+
+try:
+    import tomllib
+except ImportError:             # Python 3.10: no TOML reader in the stdlib
+    tomllib = None
 
 from test_standupguy import commit, git  # also isolates git config/HOME
 
@@ -107,12 +111,12 @@ class TestAuthorFilter(unittest.TestCase):
 
 class TestSinceNormalization(unittest.TestCase):
     def test_words_passed_verbatim_with_midnight(self):
+        # (today, yesterday, N days ago and N weeks ago are worked out here
+        # as calendar days instead: see test_dates.TestSinceArgument)
         f = gitlog_mod._since_to_arg
-        self.assertEqual(f("yesterday"), "yesterday 00:00")
-        self.assertEqual(f(" 3 days ago "), "3 days ago 00:00")
+        self.assertEqual(f(" 3 months ago "), "3 months ago 00:00")
         self.assertEqual(f("last monday"), "last monday 00:00")
         self.assertEqual(f("2026-10-14"), "2026-10-14 00:00")
-        self.assertEqual(f("today"), "today 00:00")
 
     def test_explicit_times_untouched(self):
         f = gitlog_mod._since_to_arg
@@ -271,6 +275,7 @@ class TestConsoleEncoding(unittest.TestCase):
         self.assertIn("Touch grass", raw.getvalue().decode("cp1252"))
 
 
+@unittest.skipIf(tomllib is None, "tomllib needs Python 3.11+")
 class TestPackaging(unittest.TestCase):
     def test_pyproject_is_explicit_about_the_flat_layout(self):
         with open(os.path.join(REPO, "pyproject.toml"), "rb") as f:

@@ -31,7 +31,7 @@ from . import push as push_mod
 from . import serve as serve_mod
 from . import stdio as stdio_mod
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 
 
 def _harden_streams() -> None:
@@ -122,7 +122,7 @@ def _show(text: str) -> None:
     """Write digest or draft text to the terminal. It is made of commit
     subjects and file names anyone can write: control characters are shown
     as visible escapes instead of being obeyed (JSON is left exact)."""
-    sys.stdout.write(stdio_mod.printable(text))
+    stdio_mod.stdout().write(stdio_mod.printable(text))
 
 
 def cmd_digest(args) -> int:
@@ -130,7 +130,7 @@ def cmd_digest(args) -> int:
     if args.format == "json":
         payloads = [p for _, p in results]
         data = payloads[0] if len(payloads) == 1 else {"repos": payloads}
-        print(json.dumps(data, indent=2))
+        stdio_mod.stdout().write(json.dumps(data, indent=2) + "\n")
         return 0
     md = "\n".join(m for m, _ in results)
     if args.draft:
@@ -199,7 +199,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--since", default=None,
                    help="git date: 'yesterday' (default), '2026-10-01', "
                         "'3 days ago', 'last monday' … Values without a time "
-                        "of day mean midnight; the words are passed to git.")
+                        "of day mean midnight. today, yesterday, N days ago "
+                        "and N weeks ago are whole local calendar days; "
+                        "other words are passed to git as typed.")
     p.add_argument("--until", default=None,
                    help="End of the range (git date). A bare date is "
                         "inclusive: --until 2026-10-15 means through 23:59:59.")
@@ -213,7 +215,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--draft", action="store_true",
                    help="Draft Yesterday/Today/Blockers prose via local model.")
     p.add_argument("--format", choices=["markdown", "json"],
-                   default="markdown")
+                   default="markdown",
+                   help="markdown (default) or json. json is the finished "
+                        "output: not with --draft or --push-slack.")
     p.add_argument("--push-slack", nargs="?", const=True, default=None,
                    metavar="WEBHOOK_URL",
                    help="POST the notes to a Slack webhook "
@@ -226,7 +230,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=_port, default=8765,
                    help="Port for `serve` (default 8765).")
     p.add_argument("--host", default="127.0.0.1",
-                   help="Bind host for `serve` (default 127.0.0.1).")
+                   help="Bind address for `serve` (default 127.0.0.1: this "
+                        "computer only). A network address such as 0.0.0.0 "
+                        "needs --token.")
+    p.add_argument("--token", default=None, metavar="TOKEN",
+                   help="`serve`: require this token (16+ printable "
+                        "characters) as `Authorization: Bearer TOKEN` or "
+                        "?token=TOKEN on every request except /health. Also "
+                        "read from STANDUPGUY_TOKEN, which is safer: a "
+                        "command-line argument shows in the process list.")
+    p.add_argument("--allow-host", action="append", default=None,
+                   metavar="NAME",
+                   help="`serve`: also answer requests whose Host header is "
+                        "NAME (e.g. host.docker.internal or devbox.lan; "
+                        "NAME:PORT pins the port). Repeatable.")
+    p.add_argument("--insecure-allow-lan", action="store_true",
+                   help="`serve`: listen on a network address WITHOUT a "
+                        "token. Anyone who can reach the port can read your "
+                        "commit history.")
     return p
 
 
@@ -237,10 +258,36 @@ def _check_roots(roots: list[str]) -> bool:
             gitlog_mod._git(root, "rev-parse", "--git-dir")
         except gitlog_mod.GitNotFound:
             raise
-        except RuntimeError:
-            print(f"error: not a git repo: {root}", file=sys.stderr)
+        except gitlog_mod.GitError as e:
+            said = " ".join(e.stderr.split())
+            if not said or "not a git repository" in said:
+                print(f"error: not a git repo: {root}", file=sys.stderr)
+            else:
+                # git's own words: for a repo owned by another user they hold
+                # the safe.directory command that fixes it
+                print(stdio_mod.printable(
+                    f"error: git cannot use {root}: {said[:600]}"),
+                    file=sys.stderr)
             return False
     return True
+
+
+def _check_output_flags(args) -> bool:
+    """`--format json` prints the digest as JSON and stops; nothing reaches
+    --draft or --push-slack. Say so (False, after printing why) instead of
+    quietly doing neither."""
+    if args.cmd is not None or args.format != "json":
+        return True
+    named = [flag for flag, given in (("--draft", args.draft),
+                                      ("--push-slack", args.push_slack))
+             if given]
+    if not named:
+        return True
+    print(f"error: --format json cannot be combined with "
+          f"{' or '.join(named)}: the JSON is printed as it is, so nothing "
+          f"would be drafted or posted. Drop one or the other.",
+          file=sys.stderr)
+    return False
 
 
 def main(argv=None) -> int:
@@ -252,6 +299,9 @@ def main(argv=None) -> int:
             # at interpreter exit (also after argparse's --help/--version)
             if sys.stdout is not None:
                 sys.stdout.flush()
+    except stdio_mod.StdoutClosed as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     except OSError as e:
         # `standupguy | head -1`: the reader is gone. POSIX says
         # BrokenPipeError, Windows a plain OSError (EINVAL) -- see stdio.
@@ -265,13 +315,20 @@ def _main(argv=None) -> int:
     _harden_streams()
     args = build_parser().parse_args(argv)
     args.root = args.root or [os.getcwd()]
+    if not _check_output_flags(args):
+        return 2
     try:
         if not _check_roots(args.root):     # mcp, serve and the digest alike
             return 2
         if args.cmd == "mcp":
             return mcp_mod.serve(args.root)
         if args.cmd == "serve":
-            return serve_mod.serve(args.root, args.host, args.port)
+            token = args.token if args.token is not None else \
+                (os.environ.get("STANDUPGUY_TOKEN") or None)
+            return serve_mod.serve(
+                args.root, args.host, args.port, token=token,
+                allow_hosts=args.allow_host or (),
+                allow_lan=args.insecure_allow_lan)
         if not _check_dates(args):
             return 2
         return cmd_digest(args)

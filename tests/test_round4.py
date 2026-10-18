@@ -331,7 +331,7 @@ class TestInclusiveUntil(unittest.TestCase):
     def test_end_of_day_appended_for_bare_until(self):
         f = gitlog_mod._since_to_arg
         self.assertEqual(f("2026-10-15", end=True), "2026-10-15 23:59:59")
-        self.assertEqual(f("yesterday", end=True), "yesterday 23:59:59")
+        self.assertEqual(f("last monday", end=True), "last monday 23:59:59")
         self.assertEqual(f("2026-10-15 12:00", end=True), "2026-10-15 12:00")
         self.assertEqual(f("now", end=True), "now")
         self.assertEqual(f("2026-10-15"), "2026-10-15 00:00")
@@ -436,6 +436,7 @@ class TestServeShape(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
+        cls.server.server_close()
 
     def get(self, path):
         with urllib.request.urlopen(
@@ -480,6 +481,7 @@ class TestServeShape(unittest.TestCase):
                 data = json.loads(resp.read().decode("utf-8"))
         finally:
             server.shutdown()
+            server.server_close()
             serve_mod.Handler.root = self.root
         self.assertIn("<@U1>", data["markdown"])          # raw for others
         self.assertNotIn("<", data["slack_text"])         # dead for Slack

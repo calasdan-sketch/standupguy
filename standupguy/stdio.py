@@ -71,6 +71,20 @@ def hush_stdout() -> None:
         pass
 
 
+class StdoutClosed(Exception):
+    """Standard output is closed: the process was started with it shut
+    (`command >&-`; pythonw on Windows), so sys.stdout is None. print() then
+    silently does nothing and .write() raises AttributeError."""
+
+
+def stdout():
+    """sys.stdout, or StdoutClosed when there is none."""
+    if sys.stdout is None:
+        raise StdoutClosed("standard output is closed, so there is nowhere "
+                           "to write the result")
+    return sys.stdout
+
+
 # C0 (but not tab and newline), DEL and C1: each shown as \xNN
 _ESCAPES = {c: f"\\x{c:02x}"
             for c in (*range(0x20), *range(0x7F, 0xA0))

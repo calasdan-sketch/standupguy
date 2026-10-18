@@ -1,12 +1,20 @@
-"""Slack push: POST the notes to an incoming webhook. Opt-in only."""
+"""Slack push: POST the notes to an incoming webhook. Opt-in only.
+
+The webhook URL is the secret: whoever has it can post to the channel. No
+error message repeats it, or any text of the HTTP library's own errors (they
+quote the request path, which is where the token is).
+"""
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import unicodedata
 import urllib.request
 import urllib.error
+
+from . import stdio as stdio_mod
 
 # Max characters per line of pushed text. Commit subjects flow through the
 # digest and (optionally) the LLM draft into Slack, so a hostile commit
@@ -91,5 +99,32 @@ def push_slack(webhook_url: str, markdown: str, timeout: int = 30) -> None:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status not in (200, 201, 204):
                 raise PushError(f"Slack returned HTTP {resp.status}")
+    except urllib.error.HTTPError as e:
+        _let_go(e)
+        raise PushError(f"Slack push failed: HTTP {e.code} "
+                        f"{_plain(e.reason)}") from None
     except urllib.error.URLError as e:
-        raise PushError(f"Slack push failed: {e.reason}")
+        raise PushError(f"Slack push failed: {_plain(e.reason)}") from None
+    except http.client.InvalidURL:
+        raise PushError(
+            "Slack push failed: the webhook URL holds a character a URL "
+            "cannot carry (a space or a line break) - check it") from None
+    except (OSError, http.client.HTTPException) as e:
+        raise PushError(f"Slack push failed: {_plain(e)}") from None
+    except ValueError:
+        raise PushError("Slack push failed: the webhook URL cannot be used - "
+                        "check it") from None
+
+
+def _plain(reason, limit: int = 120) -> str:
+    """What a library or a server said, as one printable line."""
+    text = stdio_mod.printable(" ".join(str(reason).split()))
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def _let_go(error) -> None:
+    """Close the reply an HTTPError carries (an open connection) now, not
+    whenever the garbage collector gets to it. Other errors carry none."""
+    reply = getattr(error, "fp", None)
+    if reply is not None:
+        reply.close()
