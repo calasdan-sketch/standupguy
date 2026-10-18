@@ -34,8 +34,13 @@ names it:
   - The Host header must be localhost, 127.0.0.1 or [::1] (or the --host
     address) on the bridge's own port. Any other name is a 403: a web page you
     open cannot read your history by pointing its own name at your computer
-    (DNS rebinding). Add a name with --allow-host NAME. HTTP/1.1 needs exactly
-    one Host header (else 400); an old HTTP/1.0 client may omit it.
+    (DNS rebinding). Add a name with --allow-host NAME (every port of that
+    name) or --allow-host NAME:PORT (that port only). This works for this
+    computer's own names too: a port forwarded to the bridge (docker -p
+    9999:8765, ssh -L 9999:127.0.0.1:8765) arrives as localhost:9999, which
+    --allow-host localhost:9999 permits. A Host with no port means port 80.
+    HTTP/1.1 needs exactly one Host header (else 400); an old HTTP/1.0 client
+    may omit it.
   - An Origin header (a browser's cross-site request) must name an allowed
     host too, and no CORS permission is ever granted.
   - --token TOKEN (or STANDUPGUY_TOKEN, 16 or more printable characters)
@@ -180,10 +185,15 @@ class Guard:
         if parsed is None:
             return False
         name, port = parsed
-        if name in self.names or (self.lan and _is_ip(name)):
+        if port is None:
+            port = 80                   # plain HTTP: no port in Host means 80
+        if (name in self.names or (self.lan and _is_ip(name))) \
+                and port == self.port:
             # our own names, and on a network bind any IP address (a page
             # cannot rebind an address, only a name): on OUR port
-            return port == self.port or (port is None and self.port == 80)
+            return True
+        # What --allow-host vouches for, this computer's own names included:
+        # a port forwarded to the bridge arrives as localhost:<that port>.
         return name in self.any_port or (name, port) in self.with_port
 
     def origin_ok(self, value) -> bool:
@@ -407,8 +417,9 @@ class Handler(BaseHTTPRequestHandler):
         if hosts and not guard.host_ok(hosts[0]):
             shown = stdio_mod.printable(hosts[0])[:100]
             self._refuse(
-                403, f"host not allowed: {shown!r} (to permit this name "
-                     "start the bridge with --allow-host)",
+                403, f"host not allowed: {shown!r} (to permit it, start the "
+                     "bridge with --allow-host NAME, or --allow-host "
+                     "NAME:PORT for that port only)",
                 f"host not allowed ({shown!r})")
             return False
         origins = self.headers.get_all("Origin") or []

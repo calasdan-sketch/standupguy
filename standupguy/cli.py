@@ -31,7 +31,7 @@ from . import push as push_mod
 from . import serve as serve_mod
 from . import stdio as stdio_mod
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 
 
 def _harden_streams() -> None:
@@ -56,7 +56,7 @@ def _harden_streams() -> None:
 def _resolve_author(args, root: str) -> str | None:
     if args.all:
         return None
-    if args.author:
+    if args.author is not None:
         return args.author
     email = gitlog_mod.default_author(root)
     if not email:
@@ -69,15 +69,20 @@ def _resolve_author(args, root: str) -> str | None:
 
 def _window(args) -> tuple[str, str | None, str]:
     """(since, until, label) for the requested mode."""
+    # "was it given" is `is not None`: an empty value is not "not given"
+    # (_check_values has already refused it)
+    given = args.since is not None
     if args.sprint is not None:
-        since = args.since or f"{args.sprint} days ago"
-        label = f"{since} → {args.until}" if args.until else f"since {since}"
+        since = args.since if given else f"{args.sprint} days ago"
+        label = f"{since} → {args.until}" if args.until is not None \
+            else f"since {since}"
         return since, args.until, f"sprint {label}"
     if args.week:
-        since = args.since or "7 days ago"
+        since = args.since if given else "7 days ago"
         return since, args.until, "week"
-    since = args.since or "yesterday"
-    label = f"{since} → {args.until}" if args.until else f"since {since}"
+    since = args.since if given else "yesterday"
+    label = f"{since} → {args.until}" if args.until is not None \
+        else f"since {since}"
     return since, args.until, label
 
 
@@ -85,7 +90,7 @@ def _check_dates(args) -> bool:
     """Refuse impossible ISO dates (exit 2); warn about words git will
     silently ignore. Returns False when the run must stop."""
     for flag, value in (("--since", args.since), ("--until", args.until)):
-        if not value:
+        if value is None:
             continue
         try:
             warning = gitlog_mod.check_date(value)
@@ -141,11 +146,11 @@ def cmd_digest(args) -> int:
             print(f"error: {e}", file=sys.stderr)
             # the digest itself needs no model: show it anyway
             print("note: showing the plain digest instead"
-                  + (" (nothing was posted to Slack)" if args.push_slack
-                     else ""), file=sys.stderr)
+                  + (" (nothing was posted to Slack)"
+                     if args.push_slack is not None else ""), file=sys.stderr)
             _show(md)
             return 2
-    if args.push_slack:
+    if args.push_slack is not None:
         webhook = args.push_slack if args.push_slack is not True else \
             os.environ.get("AUTOSTANDUP_SLACK_WEBHOOK", "")
         if not webhook:
@@ -198,7 +203,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Include all authors (default: your git user).")
     p.add_argument("--since", default=None,
                    help="git date: 'yesterday' (default), '2026-10-01', "
-                        "'3 days ago', 'last monday' … Values without a time "
+                        "'3 days ago', 'last monday' (a bare 'monday' means "
+                        "today to git) … Values without a time "
                         "of day mean midnight. today, yesterday, N days ago "
                         "and N weeks ago are whole local calendar days; "
                         "other words are passed to git as typed.")
@@ -220,8 +226,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "output: not with --draft or --push-slack.")
     p.add_argument("--push-slack", nargs="?", const=True, default=None,
                    metavar="WEBHOOK_URL",
-                   help="POST the notes to a Slack webhook "
-                        "(or AUTOSTANDUP_SLACK_WEBHOOK).")
+                   help="POST the notes to a Slack webhook; a bare "
+                        "--push-slack uses AUTOSTANDUP_SLACK_WEBHOOK. An "
+                        "empty value is an error.")
     p.add_argument("--base-url", default=None)
     p.add_argument("--model", default=None)
     p.add_argument("cmd", nargs="?", choices=["mcp", "serve"],
@@ -243,7 +250,10 @@ def build_parser() -> argparse.ArgumentParser:
                    metavar="NAME",
                    help="`serve`: also answer requests whose Host header is "
                         "NAME (e.g. host.docker.internal or devbox.lan; "
-                        "NAME:PORT pins the port). Repeatable.")
+                        "NAME:PORT pins the port). Works for localhost, "
+                        "127.0.0.1 and [::1] too: a forwarded port "
+                        "(docker -p 9999:8765, ssh -L) arrives as "
+                        "localhost:9999. Repeatable.")
     p.add_argument("--insecure-allow-lan", action="store_true",
                    help="`serve`: listen on a network address WITHOUT a "
                         "token. Anyone who can reach the port can read your "
@@ -272,6 +282,39 @@ def _check_roots(roots: list[str]) -> bool:
     return True
 
 
+# The options that take text, and what each one needs (for _check_values).
+_TEXT_OPTIONS = (
+    ("--author", "author", "a name or e-mail address"),
+    ("--since", "since", "a git date"),
+    ("--until", "until", "a git date"),
+    ("--push-slack", "push_slack", "a webhook URL"),
+    ("--base-url", "base_url", "a model endpoint URL"),
+    ("--model", "model", "a model name"),
+    ("--host", "host", "a bind address"),
+)
+
+
+def _check_values(args) -> bool:
+    """An option given an empty value (`--push-slack "$HOOK"` with $HOOK
+    never set) is a mistake, not a request for the default: say so (False,
+    after printing it) instead of doing what nobody asked for. `""` is falsy,
+    so it used to read as "not given": nothing was posted, nothing was said,
+    exit code 0."""
+    given = [("--root", "a repo path", value) for value in args.root or ()]
+    given += [(flag, what, getattr(args, name))
+              for flag, name, what in _TEXT_OPTIONS]
+    for flag, what, value in given:
+        if isinstance(value, str) and not value.strip():
+            way_out = ("a bare --push-slack posts to "
+                       "AUTOSTANDUP_SLACK_WEBHOOK" if flag == "--push-slack"
+                       else "leave the option out to use the default")
+            print(f"error: {flag} needs {what}, but the value is empty - is "
+                  f"the variable it came from set? ({way_out})",
+                  file=sys.stderr)
+            return False
+    return True
+
+
 def _check_output_flags(args) -> bool:
     """`--format json` prints the digest as JSON and stops; nothing reaches
     --draft or --push-slack. Say so (False, after printing why) instead of
@@ -279,7 +322,8 @@ def _check_output_flags(args) -> bool:
     if args.cmd is not None or args.format != "json":
         return True
     named = [flag for flag, given in (("--draft", args.draft),
-                                      ("--push-slack", args.push_slack))
+                                      ("--push-slack",
+                                       args.push_slack is not None))
              if given]
     if not named:
         return True
@@ -314,6 +358,8 @@ def main(argv=None) -> int:
 def _main(argv=None) -> int:
     _harden_streams()
     args = build_parser().parse_args(argv)
+    if not _check_values(args):
+        return 2
     args.root = args.root or [os.getcwd()]
     if not _check_output_flags(args):
         return 2

@@ -414,6 +414,170 @@ class TestAllowHost(Base):
                                           allow_hosts=[bad])
 
 
+class TestAllowHostForThisComputersOwnNames(Base):
+    """Docker's `-p 9999:8765` and `ssh -L 9999:127.0.0.1:8765` reach the
+    bridge as localhost:9999: this computer's name, but not the bridge's own
+    port. That is refused until the user allows it, and --allow-host, which
+    the refusal points to, has to be the way (round-2 panel finding)."""
+
+    def code(self, server, host, **more):
+        return ask(server, DIGEST, {"Host": host, **more})[0]
+
+    def test_another_port_of_this_computer_is_refused_by_default(self):
+        server = self.serve()
+        for host in ("localhost:9999", "127.0.0.1:9999", "[::1]:9999",
+                     "localhost"):
+            with self.subTest(host):
+                self.assertEqual(self.code(server, host), 403)
+
+    def test_name_and_port_allow_that_name_on_that_port_only(self):
+        server = self.serve(allow_hosts=["localhost:9999"])
+        for host, want in (("localhost:9999", 200), ("LocalHost:9999", 200),
+                           ("localhost.:9999", 200),
+                           (f"localhost:{self.port}", 200),   # its own, still
+                           ("localhost:9998", 403), ("localhost", 403),
+                           ("127.0.0.1:9999", 403), ("[::1]:9999", 403)):
+            with self.subTest(host):
+                self.assertEqual(self.code(server, host), want)
+
+    def test_a_bare_name_allows_every_port_of_that_name(self):
+        server = self.serve(allow_hosts=["localhost"])
+        for host, want in (("localhost", 200), ("localhost:9999", 200),
+                           ("localhost:1", 200),
+                           (f"localhost:{self.port}", 200),
+                           ("127.0.0.1:9999", 403), ("[::1]:9999", 403)):
+            with self.subTest(host):
+                self.assertEqual(self.code(server, host), want)
+
+    def test_every_spelling_of_this_computer_can_be_allowed(self):
+        for entry, host, other in (
+                ("127.0.0.1:9999", "127.0.0.1:9999", "localhost:9999"),
+                ("[::1]:9999", "[::1]:9999", "127.0.0.1:9999")):
+            with self.subTest(entry):
+                server = self.serve(allow_hosts=[entry])
+                self.assertEqual(self.code(server, host), 200)
+                self.assertEqual(self.code(server, other), 403)
+
+    def test_a_host_without_a_port_means_port_80(self):
+        server = self.serve(allow_hosts=["localhost:80"])
+        self.assertEqual(self.code(server, "localhost"), 200)
+        self.assertEqual(self.code(server, "localhost:80"), 200)
+        self.assertEqual(self.code(server, "localhost:8080"), 403)
+
+    def test_the_origin_rule_does_not_relax(self):
+        server = self.serve(allow_hosts=["localhost:9999"])
+        host = "localhost:9999"
+        self.assertEqual(self.code(server, host, Origin="http://localhost:9999"),
+                         200)
+        for origin in ("https://evil.example", "http://localhost:9998",
+                       "http://evil.example:9999", "null"):
+            with self.subTest(origin):
+                self.assertEqual(self.code(server, host, Origin=origin), 403)
+
+    def test_the_token_rule_does_not_relax(self):
+        server = self.serve(allow_hosts=["localhost:9999"], token=TOKEN)
+        self.assertEqual(self.code(server, "localhost:9999"), 401)
+        self.assertEqual(self.code(server, "localhost:9999",
+                                   Authorization="Bearer wrong-wrong-wrong-wrong"),
+                         401)
+        self.assertEqual(self.code(server, "localhost:9999",
+                                   Authorization=f"Bearer {TOKEN}"), 200)
+
+    def test_an_allowed_port_of_this_computer_leaks_nothing_elsewhere(self):
+        server = self.serve(allow_hosts=["localhost:9999"])
+        status, _, body = ask(server, DIGEST, {"Host": "evil.example:9999"})
+        self.assertEqual(status, 403)
+        self.assert_nothing_leaked(body)
+
+    def test_on_a_network_bind_an_ip_address_can_be_allowed_on_another_port(self):
+        token = TOKEN.encode()
+        guard = serve_mod.Guard(8765, "0.0.0.0", True, token,
+                                [("192.168.1.5", 9999)])
+        self.assertTrue(guard.host_ok("192.168.1.5:9999"))
+        self.assertTrue(guard.host_ok("192.168.1.9:8765"))   # any address, our port
+        self.assertFalse(guard.host_ok("192.168.1.9:9999"))
+        self.assertFalse(guard.host_ok("192.168.1.5:9998"))
+
+    def test_the_refusal_names_the_way_out_and_it_works(self):
+        server = self.serve()
+        status, _, body = ask(server, DIGEST, {"Host": "localhost:9999"})
+        self.assertEqual(status, 403)
+        message = json.loads(body)["error"]
+        self.assertIn("--allow-host", message)
+        self.assertIn("NAME:PORT", message)      # the port-pinning form
+        self.assertIn("localhost:9999", message)
+        # ...and taking the advice, literally, opens exactly that door
+        again = self.serve(allow_hosts=["localhost:9999"])
+        self.assertEqual(self.code(again, "localhost:9999"), 200)
+
+    def test_the_refusal_never_suggests_a_door_it_cannot_open(self):
+        # nonsense in the Host header gets the advice without an entry to copy
+        server = self.serve()
+        for host in ("user@localhost:9999", "a b", "localhost:99999"):
+            with self.subTest(host):
+                status, _, body = ask(server, DIGEST, {"Host": host})
+                self.assertIn(status, (400, 403))
+                if status == 403:
+                    self.assertNotIn(f"--allow-host {host}",
+                                     json.loads(body)["error"])
+
+
+class TestDuplicateHeaders(Base):
+    """A browser sends one Host and one Origin. A request with two of either is
+    refused whatever they say and in whatever order; of two Authorization
+    headers only the first counts (round-2 panel: the second Origin was
+    unpinned, so reading only the first passed every test)."""
+
+    def setUp(self):
+        super().setUp()
+        self.server = self.serve(token=TOKEN)
+        self.host = f"Host: localhost:{self.port}"
+        self.origin = f"Origin: http://localhost:{self.port}"
+        self.evil_host = "Host: evil.example"
+        self.evil_origin = "Origin: https://evil.example"
+        self.auth = f"Authorization: Bearer {TOKEN}"
+
+    def send(self, *headers):
+        request = "\r\n".join([f"GET {DIGEST} HTTP/1.1", *headers,
+                               "Connection: close", "", ""])
+        reply = raw(self.server, request.encode()).decode("utf-8", "replace")
+        return int(reply.split(" ", 2)[1]), reply
+
+    def test_the_request_the_cases_below_start_from_works(self):
+        status, reply = self.send(self.host, self.origin, self.auth)
+        self.assertEqual(status, 200)
+        self.assertIn("login flow", reply)
+
+    def test_two_host_headers_are_a_400_whatever_they_say(self):
+        for pair in ((self.host, self.evil_host), (self.evil_host, self.host),
+                     (self.host, self.host)):
+            with self.subTest(pair):
+                status, reply = self.send(*pair, self.auth)
+                self.assertEqual(status, 400)
+                self.assert_nothing_leaked(reply)
+
+    def test_two_origin_headers_are_a_403_whatever_they_say(self):
+        for pair in ((self.origin, self.evil_origin),
+                     (self.evil_origin, self.origin),
+                     (self.origin, self.origin),
+                     (self.evil_origin, self.evil_origin)):
+            with self.subTest(pair):
+                status, reply = self.send(self.host, *pair, self.auth)
+                self.assertEqual(status, 403)
+                self.assertIn("origin not allowed", reply)
+                self.assert_nothing_leaked(reply)
+
+    def test_the_first_authorization_header_is_the_one_that_counts(self):
+        wrong = "Authorization: Bearer " + "y" * 24
+        for pair, want in (((self.auth, wrong), 200), ((wrong, self.auth), 401),
+                           ((wrong, wrong), 401)):
+            with self.subTest(pair):
+                status, reply = self.send(self.host, *pair)
+                self.assertEqual(status, want)
+                if want == 401:
+                    self.assert_nothing_leaked(reply)
+
+
 # --------------------------------------------------------------- exposure
 
 
@@ -699,6 +863,20 @@ class TestReadmeSaysIt(unittest.TestCase):
             if "--host 0.0.0.0" in para:
                 self.assertTrue("TOKEN" in para, "0.0.0.0 without a token: "
                                 + para[:80])
+
+    def test_the_readme_shows_the_forwarded_port_examples(self):
+        # the refusal points to --allow-host, so the README has to show the
+        # two ways a forwarded port reaches the bridge and what to allow
+        with open(os.path.join(REPO, "README.md"), encoding="utf-8") as f:
+            flat = " ".join(f.read().split())
+        for phrase in ("-p 9999:8765", "ssh -L 9999:127.0.0.1:8765",
+                       "--allow-host localhost:9999",
+                       "every port", "that port only", "port 80"):
+            self.assertTrue(phrase in flat,
+                            f"the README does not say: {phrase!r}")
+        helptext = " ".join(cli_mod.build_parser().format_help().split())
+        for phrase in ("localhost", "NAME:PORT", "-p 9999:8765"):
+            self.assertTrue(phrase in helptext, f"--help never says {phrase!r}")
 
 
 if __name__ == "__main__":

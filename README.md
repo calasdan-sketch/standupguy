@@ -48,6 +48,15 @@ cannot be combined with `--draft` or `--push-slack` (an `error:` line and
 exit code 2, before git is run or anything is sent). Draft or post the
 Markdown instead.
 
+An option that takes a value and gets an empty one (`--push-slack "$HOOK"`
+when `$HOOK` was never set) is an `error:` line and exit code 2, before git
+is run or anything is sent - never a quiet fall-back to the default. That
+covers `--root`, `--author`, `--since`, `--until`, `--push-slack`,
+`--base-url`, `--model` and `--host`. Leave the option out to get its
+default; a bare `--push-slack` posts to `AUTOSTANDUP_SLACK_WEBHOOK`. An
+empty environment variable counts as not set, and so does a blank value in
+a request to `serve` or in an argument of an `mcp` tool (`until=`).
+
 If standard output is closed (`standupguy >&-`) the digest and the JSON
 have nowhere to go: one `error: standard output is closed ...` line and
 exit code 1, not a traceback, and `mcp` says the same before it reads a
@@ -136,9 +145,28 @@ standupguy serve --host 0.0.0.0 --root /path/to/repo
   trust completely.
 - A caller that reaches the bridge by a DNS name (`host.docker.internal`,
   `devbox.lan`) gets a `403` until you allow the name:
-  `--allow-host host.docker.internal` (repeatable; `NAME:PORT` pins the
-  port). A Host that is an IP address is accepted when the bridge listens
-  on a network address.
+  `--allow-host host.docker.internal` (repeatable). One rule for every name:
+  `--allow-host NAME` allows that name on every port, `--allow-host
+  NAME:PORT` on that port only (a `Host` with no port means port 80). A
+  Host that is an IP address is accepted when the bridge listens on a
+  network address.
+- A forwarded port reaches the bridge under a port number of its own: the
+  caller asks for `http://localhost:9999/...`, the bridge listens on 8765,
+  so the `Host` header says `localhost:9999` and is refused like any other
+  name you have not allowed. `--allow-host` takes this computer's own names
+  too (`localhost`, `127.0.0.1` and `[::1]`, each one on its own):
+
+  ```bash
+  # the bridge runs in a container started with  docker run -p 9999:8765 ...
+  # (a network address, so STANDUPGUY_TOKEN has to be set, as above)
+  standupguy serve --host 0.0.0.0 --allow-host localhost:9999 --root /repo
+
+  # the bridge runs on another machine, reached with  ssh -L 9999:127.0.0.1:8765 devbox
+  standupguy serve --allow-host localhost:9999 --root /repo
+  ```
+
+  An allowed `Host` relaxes nothing else: the `Origin` rule and the token
+  rule apply as before.
 - The token is never printed or logged. A refused request is one line on
   stderr: the path only, never the query string.
 - It is plain HTTP: keep the port off the public internet.
@@ -292,6 +320,14 @@ ago`, `N years ago`) can be an hour off across a clock change - or, in the
 first or last hour after midnight, a day. Give an explicit date
 (`--since 2026-03-08`) when the exact start matters.
 
+**Weekday names.** Git reads a weekday name only right after `last` or a
+number (`last monday`, `2 mondays ago`). Anywhere else it skips the word,
+so a bare `--since monday` (also `this monday`, `monday 9am`) means *today*:
+on a Saturday that leaves out the whole week. `standupguy` warns on stderr
+(one line for each option), still runs the value as typed, and suggests
+`last monday` or a date. `serve` and `mcp` take the word the way git does,
+without a warning.
+
 Git's parser is also *fuzzy*: it turned `2026-13-45` into October 13 and
 `notadate` into "now" without a word. `standupguy` refuses an
 ISO-looking date that is not a real date (exit 2) and warns on stderr
@@ -354,7 +390,8 @@ or later) already installed - they work offline and download nothing.
 
 - **Dates.** Weekday names (`last monday`), `N months ago` and `N years ago`
   are worked out by git, not by `standupguy`; *Date handling* says what
-  that can get wrong around a clock change.
+  that can get wrong around a clock change. A bare weekday (`monday`) means
+  today to git: the command line warns about it, `serve` and `mcp` do not.
 - **Windows.** This release was developed and tested on Linux. What is
   specific to Windows (a closed pipe that is not a `BrokenPipeError`, the
   cp1252 console, UTF-8 on the MCP wire) is covered by Linux stand-ins, not

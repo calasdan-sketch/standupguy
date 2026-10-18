@@ -11,6 +11,8 @@ SG-4  `--since`/`--until` filter on the COMMITTER date, but the day labels were
 SG-8  "yesterday" was left to git, which subtracts 24 hours: in the first hour
       after midnight on the day after the spring-forward Sunday it returned
       Saturday's commits.
+R2-3  `--since monday` is handed to git as "monday 00:00", which git reads as
+      today 00:00: on a Saturday it lost the whole week, and nothing said so.
 """
 
 import contextlib
@@ -23,11 +25,12 @@ import unittest
 from unittest import mock
 
 from test_round5 import run_cli
-from test_standupguy import git  # also isolates git config/HOME
+from test_standupguy import git, make_repo  # also isolates git config/HOME
 
 from standupguy import cli as cli_mod
 from standupguy import digest as digest_mod
 from standupguy import gitlog as gitlog_mod
+from standupguy import serve as serve_mod
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -270,6 +273,128 @@ class TestWholeCalendarDays(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual([c["subject"] for c in json.loads(out)["commits"]],
                          ["sunday mar 8"])
+
+
+class TestAWeekdayGitSkips(unittest.TestCase):
+    """Git reads a weekday name only after a count ("last monday", "2 mondays
+    ago"). Anywhere else the word is skipped, so a bare "monday" is today."""
+
+    def test_the_forms_git_skips_get_a_warning(self):
+        for value, name in (
+                ("monday", "monday"), ("Monday", "monday"),
+                (" MONDAY ", "monday"), ("mon", "monday"),
+                ("this monday", "monday"), ("monday 9am", "monday"),
+                ("friday 17:00", "friday"), ("last week monday", "monday"),
+                ("sunday", "sunday"), ("tue", "tuesday"),
+                ("wednesday", "wednesday"), ("thurs", "thursday"),
+                ("sat", "saturday")):
+            with self.subTest(value):
+                warning = gitlog_mod.check_date(value)
+                self.assertTrue(warning, f"no warning for {value!r}")
+                self.assertIn(f"'{value.strip()}'", warning)
+                self.assertIn(f"'last {name}'", warning)
+                self.assertIn("means today", warning)
+                self.assertTrue(warning.isascii(), warning)
+
+    def test_the_forms_git_reads_get_none(self):
+        for value in ("last monday", "Last Monday", "last mon",
+                      "last friday 09:00", "2 mondays ago", "1 monday ago",
+                      "one friday ago", "two sundays ago", "10 saturdays ago",
+                      "2026-10-12", "2026-10-12 monday", "yesterday",
+                      "3 days ago", "last week", "today", "noon",
+                      "3 months ago", "march", "", "  "):
+            with self.subTest(value):
+                self.assertIsNone(gitlog_mod.check_date(value))
+
+    def test_a_word_git_does_not_know_keeps_its_own_warning(self):
+        warning = gitlog_mod.check_date("mondayz")
+        self.assertIn("not a date git understands", warning)
+        self.assertIn("mondayz", warning)
+
+    def test_the_command_line_says_so_once_for_each_option(self):
+        repo = make_repo()
+        code, out, err = run_cli("--root", repo, "--all", "--since", "monday")
+        self.assertEqual(code, 0, err)
+        lines = err.strip().splitlines()
+        self.assertEqual(len(lines), 1, err)
+        self.assertTrue(lines[0].startswith("warning: --since 'monday': "), err)
+        self.assertIn("'last monday'", lines[0])
+        self.assertIn("since monday", out)       # run as typed, not rewritten
+        code, out, err = run_cli("--root", repo, "--all", "--since", "monday",
+                                 "--until", "friday")
+        self.assertEqual(code, 0, err)
+        lines = err.strip().splitlines()
+        self.assertEqual(len(lines), 2, err)
+        self.assertTrue(lines[0].startswith("warning: --since 'monday': "), err)
+        self.assertTrue(lines[1].startswith("warning: --until 'friday': "), err)
+
+    def test_the_command_line_is_quiet_for_the_forms_git_reads(self):
+        repo = make_repo()
+        for since in ("last monday", "2 mondays ago", "3 days ago",
+                      "2026-10-12"):
+            with self.subTest(since):
+                code, out, err = run_cli("--root", repo, "--all", "--since",
+                                         since)
+                self.assertEqual((code, err), (0, ""))
+        code, out, err = run_cli("--root", repo, "--all")      # the default
+        self.assertEqual((code, err), (0, ""))
+
+    def test_serve_and_mcp_take_the_word_the_way_git_does(self):
+        # they cannot warn; they never refused it either (only an impossible
+        # date is an error), and the README says so
+        status, _, body = serve_mod._payload([make_repo()],
+                                             {"since": ["monday"], "all": ["1"]},
+                                             False)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["since"], "monday")
+
+    def test_the_readme_and_the_help_say_so(self):
+        with open(os.path.join(REPO, "README.md"), encoding="utf-8") as f:
+            flat = " ".join(f.read().split())
+        for phrase in ("a bare `--since monday`", "means *today*",
+                       "`serve` and `mcp` take the word the way git does"):
+            self.assertTrue(phrase in flat,
+                            f"the README does not say: {phrase!r}")
+        helptext = " ".join(cli_mod.build_parser().format_help().split())
+        self.assertTrue("a bare 'monday' means today" in helptext,
+                        "--help does not say it")
+
+
+class TestWhatGitDoesWithAWeekday(unittest.TestCase):
+    """The fact the warning rests on, asked of the git that is installed: on a
+    Saturday, "monday" is today and only "last monday" is the Monday."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.repo = new_repo()
+        for day in range(12, 18):               # Monday the 12th ... Saturday
+            commit_at(cls.repo, f"day {day}", f"2026-10-{day}T12:00:00-05:00")
+        with it_is("2026-10-17T15:00:00-05:00"):
+            said = gitlog_mod._git(cls.repo, "rev-parse",
+                                   "--since=today 00:00").strip()
+        midnight = datetime.datetime.fromisoformat("2026-10-17T00:00:00-05:00")
+        cls.staged = said == f"--max-age={int(midnight.timestamp())}"
+
+    def setUp(self):
+        if not self.staged:
+            self.skipTest("this git does not take TZ and GIT_TEST_DATE_NOW")
+
+    def subjects(self, since):
+        return sorted(c.subject for c in
+                      gitlog_mod.commits_since(self.repo, since))
+
+    def test_a_bare_weekday_is_today(self):
+        with it_is("2026-10-17T15:00:00-05:00"):
+            for word in ("monday", "mon", "this monday", "friday", "saturday"):
+                with self.subTest(word):
+                    self.assertEqual(self.subjects(word), ["day 17"])
+
+    def test_a_weekday_after_a_count_is_that_day(self):
+        with it_is("2026-10-17T15:00:00-05:00"):
+            week = [f"day {d}" for d in range(12, 18)]
+            self.assertEqual(self.subjects("last monday"), week)
+            self.assertEqual(self.subjects("1 monday ago"), week)
+            self.assertEqual(self.subjects("last friday"), ["day 16", "day 17"])
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ whole test process (no global/system gitconfig; HOME/USERPROFILE in a temp
 dir), so autocrlf/gpgsign/hooks settings can never leak into fixtures.
 """
 
+import datetime
 import io
 import json
 import os
@@ -14,6 +15,7 @@ import threading
 import unittest
 from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest import mock
 
 _HOME = tempfile.mkdtemp(prefix="sg-home-")
 with open(os.path.join(_HOME, "gitconfig"), "w", encoding="utf-8") as _f:
@@ -130,8 +132,13 @@ class TestDigest(unittest.TestCase):
         self.assertIn("No commits", md)
 
     def test_weekly(self):
+        # "7 days ago" is counted from today, so the day is pinned: this test
+        # used to fail as soon as the fixture's commits (10-10 and 10-14) were
+        # more than a week old
         tmp = make_repo()
-        md = digest_mod.weekly_markdown(tmp, "dan@example.com")
+        with mock.patch.object(gitlog_mod, "_today",
+                               return_value=datetime.date(2026, 10, 15)):
+            md = digest_mod.weekly_markdown(tmp, "dan@example.com")
         self.assertIn("2026-10-14", md)
         self.assertIn("2026-10-10", md)
         self.assertIn("sprint review", md.lower())

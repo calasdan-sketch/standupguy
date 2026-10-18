@@ -82,21 +82,56 @@ _MONTHS = ("january", "february", "march", "april", "may", "june", "july",
            "august", "september", "october", "november", "december")
 _WEEKDAYS = ("sunday", "monday", "tuesday", "wednesday", "thursday",
              "friday", "saturday")
+# git counts in words as well: "two days ago", "one friday ago"
+_NUMBER_WORDS = ("one", "two", "three", "four", "five", "six", "seven",
+                 "eight", "nine", "ten")
 _DATE_WORDS = {
     "now", "today", "yesterday", "noon", "midnight", "tea", "never",
     "am", "pm", "ago", "last", "this", "next",
     "second", "seconds", "minute", "minutes", "hour", "hours",
     "day", "days", "week", "weeks", "month", "months", "year", "years",
-    "fortnight", "utc", "gmt", "z", "t",
+    "fortnight", "utc", "gmt", "z", "t", *_NUMBER_WORDS,
 }
+
+
+def _weekday(word: str) -> str | None:
+    """The weekday a word names the way git reads it, else None: a prefix of
+    the plural ("mon", "monday", "mondays"), 3 letters or more."""
+    if len(word) < 3:
+        return None
+    return next((day for day in _WEEKDAYS if (day + "s").startswith(word)),
+                None)
 
 
 def _known_date_word(word: str) -> bool:
     if word in _DATE_WORDS:
         return True
     # git matches month/weekday names by prefix, 3 letters or more
-    return len(word) >= 3 and any(
-        name.startswith(word) for name in _MONTHS + _WEEKDAYS)
+    return len(word) >= 3 and (
+        any(name.startswith(word) for name in _MONTHS)
+        or _weekday(word) is not None)
+
+
+# What may stand right before a weekday name for git to read it: "last
+# monday", "2 mondays ago", "one friday ago".
+_COUNT_WORDS = ("last", *_NUMBER_WORDS)
+
+
+def _skipped_weekday(s: str) -> str | None:
+    """The first weekday name in `s` that git will skip, else None.
+
+    Git's date parser reads a weekday name only right after a count ("last
+    monday", "2 mondays ago"). Anywhere else the word is skipped without a
+    word, so a bare "monday" (also "this monday", "monday 9am") means TODAY."""
+    words = re.findall(r"[a-z]+|[0-9]+", s.lower())
+    for i, word in enumerate(words):
+        day = _weekday(word)
+        if day is None:
+            continue
+        before = words[i - 1] if i else ""
+        if not (before.isdigit() or before in _COUNT_WORDS):
+            return day
+    return None
 
 
 def check_date(value: str) -> str | None:
@@ -124,6 +159,12 @@ def check_date(value: str) -> str | None:
         return (f"'{s}' is not a date git understands (unknown: "
                 f"{', '.join(unknown)}); git will guess — probably 'now'. "
                 f"Try 'yesterday', '3 days ago', 'last monday' or 2026-10-14.")
+    day = _skipped_weekday(s)
+    if day:
+        return (f"'{s}': git skips a weekday name unless 'last' or a number "
+                f"comes right before it (a bare '{day}' means today). Use "
+                f"'last {day}' for the most recent {day.capitalize()} before "
+                f"today, or a date such as 2026-10-12.")
     return None
 
 
