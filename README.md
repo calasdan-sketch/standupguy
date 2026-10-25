@@ -16,8 +16,11 @@ Zero dependencies — Python 3.10+ stdlib only. Needs `git` on your PATH
 (on Windows: [Git for Windows](https://git-scm.com/download/win)).
 
 ```bash
-pip install git+https://github.com/calasdan-sketch/standupguy
+pip install standupguy
 standupguy --version
+
+# or from source
+pip install git+https://github.com/calasdan-sketch/standupguy
 ```
 
 That installs the `standupguy` command (`py -m standupguy` / `python -m
@@ -35,9 +38,10 @@ standupguy --since 2026-10-01       # custom range (--until optional, inclusive)
 standupguy --root ../api --root ../web   # several repos: one section per repo
 standupguy --draft                  # LLM prose: Yesterday / Today / Blockers
 standupguy --format json            # machine-readable digest
-standupguy --author "teammate@co"   # filter (default: your git user)
+standupguy --author "teammate@co"   # filter (default: your git user); no "In progress"
+                                    # section then: your working tree is not theirs
 standupguy --all                    # everyone
-standupguy --push-slack             # POST to AUTOSTANDUP_SLACK_WEBHOOK
+standupguy --push-slack             # POST to STANDUPGUY_SLACK_WEBHOOK
 standupguy mcp                      # MCP server on stdio
 standupguy serve                    # HTTP bridge for Activepieces / workflow tools (this computer only)
 standupguy serve --port 9000        # ...on another port (default 8765)
@@ -54,7 +58,7 @@ when `$HOOK` was never set) is an `error:` line and exit code 2, before git
 is run or anything is sent - never a quiet fall-back to the default. That
 covers `--root`, `--author`, `--since`, `--until`, `--push-slack`,
 `--base-url`, `--model` and `--host`. Leave the option out to get its
-default; a bare `--push-slack` posts to `AUTOSTANDUP_SLACK_WEBHOOK`. An
+default; a bare `--push-slack` posts to `STANDUPGUY_SLACK_WEBHOOK`. An
 empty environment variable counts as not set, and so does a blank value in
 a request to `serve` or in an argument of an `mcp` tool (`until=`).
 
@@ -187,7 +191,7 @@ standupguy serve --host 0.0.0.0 --root /path/to/repo
   stderr: the path only, never the query string.
 - It is plain HTTP: keep the port off the public internet.
 
-[`workflows/activepieces-standup-digest.json`](workflows/activepieces-standup-digest.json)
+[`workflows/activepieces-standup-digest.json`](https://github.com/calasdan-sketch/standupguy/blob/main/workflows/activepieces-standup-digest.json)
 is a documented flow definition (it's a human-readable spec, not a native
 export — build it in Activepieces by adding the steps in order; the file
 carries the exact config for each step and setup notes at the top):
@@ -249,12 +253,18 @@ _none reported — fill in yours_
   (Ollama defaults shown):
 
 ```bash
-export AUTOSTANDUP_BASE_URL="http://localhost:11434/v1"
-export AUTOSTANDUP_MODEL="llama3.1"
+export STANDUPGUY_BASE_URL="http://localhost:11434/v1"
+export STANDUPGUY_MODEL="llama3.1"
 # freellmapi works too — it's OpenAI-compatible:
-export AUTOSTANDUP_BASE_URL="https://api.freellmapi.com/v1"
-export AUTOSTANDUP_API_KEY="<your key>"
+export STANDUPGUY_BASE_URL="https://api.freellmapi.com/v1"
+export STANDUPGUY_API_KEY="<your key>"
 ```
+
+The older `AUTOSTANDUP_BASE_URL`, `AUTOSTANDUP_MODEL`, `AUTOSTANDUP_API_KEY`
+and `AUTOSTANDUP_SLACK_WEBHOOK` still work: `STANDUPGUY_*` is read first,
+the old name is the fallback. If the model URL is plain `http://` and not
+this computer (and you set an API key), `--draft` warns on stderr that the
+key travels unencrypted.
 
 - **Multi-repo (`--root A --root B`):** one section per repo, in the
   order given, in every mode; `--format json` then returns
@@ -289,7 +299,7 @@ export AUTOSTANDUP_API_KEY="<your key>"
   configured ones) comes back as an `isError` result. The server keeps
   running after either, and notifications are never answered.
 - **Push:** `--push-slack` POSTs the Markdown to a Slack incoming webhook
-  (URL from the flag or `AUTOSTANDUP_SLACK_WEBHOOK`). Commit-derived text
+  (URL from the flag or `STANDUPGUY_SLACK_WEBHOOK`). Commit-derived text
   is sanitized before posting: control characters stripped, lines
   truncated at 500 chars, `@channel`/`@here`/`@everyone` (and the
   `<!channel>` markup form) rewritten as `[at]channel`-style text, and
@@ -426,10 +436,6 @@ or later) already installed - they work offline and download nothing.
   specific to Windows (a closed pipe that is not a `BrokenPipeError`, the
   cp1252 console, UTF-8 on the MCP wire) is covered by Linux stand-ins, not
   by a run on Windows.
-- **Line endings.** The repository's text files are committed with Windows
-  (CRLF) line endings and there is no `.gitattributes`: keep them when you
-  edit a file. On Linux and macOS `git diff` flags them as trailing
-  whitespace.
 
 ## License
 

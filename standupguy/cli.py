@@ -23,6 +23,7 @@ import json
 import os
 import sys
 
+from . import config as config_mod
 from . import digest as digest_mod
 from . import draft as draft_mod
 from . import gitlog as gitlog_mod
@@ -31,7 +32,7 @@ from . import push as push_mod
 from . import serve as serve_mod
 from . import stdio as stdio_mod
 
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 
 
 def _harden_streams() -> None:
@@ -107,7 +108,7 @@ def _repo_digest(args, root: str) -> tuple[str, dict]:
     author = _resolve_author(args, root)
     since, until, label = _window(args)
     commits = gitlog_mod.commits_since(root, since, author, until)
-    in_progress = gitlog_mod.uncommitted(root)
+    in_progress = gitlog_mod.uncommitted_for(root, author)
     if args.sprint is not None:
         md = digest_mod.sprint_markdown(root, since, until, author,
                                         commits=commits,
@@ -152,10 +153,10 @@ def cmd_digest(args) -> int:
             return 2
     if args.push_slack is not None:
         webhook = args.push_slack if args.push_slack is not True else \
-            os.environ.get("AUTOSTANDUP_SLACK_WEBHOOK", "")
+            config_mod.env("SLACK_WEBHOOK")
         if not webhook:
             print("error: no webhook — pass --push-slack <url> or set "
-                  "AUTOSTANDUP_SLACK_WEBHOOK", file=sys.stderr)
+                  "STANDUPGUY_SLACK_WEBHOOK", file=sys.stderr)
             return 2
         try:
             push_mod.push_slack(webhook, md)
@@ -198,7 +199,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "`mcp` and `serve` take it repeated too.")
     p.add_argument("--author", default=None,
                    help="Filter by author: case-insensitive substring of the "
-                        "author name or email (default: your git user.email).")
+                        "author name or email (default: your git user.email). "
+                        "The uncommitted-files section is shown only for "
+                        "you (--author equal to your git user.email or "
+                        "user.name) or with --all.")
     p.add_argument("--all", action="store_true",
                    help="Include all authors (default: your git user). Every "
                         "author, not every branch: the digest reads the "
@@ -229,7 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--push-slack", nargs="?", const=True, default=None,
                    metavar="WEBHOOK_URL",
                    help="POST the notes to a Slack webhook; a bare "
-                        "--push-slack uses AUTOSTANDUP_SLACK_WEBHOOK. An "
+                        "--push-slack uses STANDUPGUY_SLACK_WEBHOOK. An "
                         "empty value is an error.")
     p.add_argument("--base-url", default=None)
     p.add_argument("--model", default=None)
@@ -308,7 +312,7 @@ def _check_values(args) -> bool:
     for flag, what, value in given:
         if isinstance(value, str) and not value.strip():
             way_out = ("a bare --push-slack posts to "
-                       "AUTOSTANDUP_SLACK_WEBHOOK" if flag == "--push-slack"
+                       "STANDUPGUY_SLACK_WEBHOOK" if flag == "--push-slack"
                        else "leave the option out to use the default")
             print(f"error: {flag} needs {what}, but the value is empty - is "
                   f"the variable it came from set? ({way_out})",

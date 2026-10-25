@@ -74,7 +74,7 @@ def _collect(root: str, since: str, author: str | None, until: str | None,
     if commits is None:
         commits = gitlog_mod.commits_since(root, since, author, until)
     if in_progress is None:
-        in_progress = gitlog_mod.uncommitted(root)
+        in_progress = gitlog_mod.uncommitted_for(root, author)
     return commits, in_progress
 
 

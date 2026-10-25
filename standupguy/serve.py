@@ -323,7 +323,7 @@ def _payload(roots: list, query: dict, weekly: bool) -> tuple[int, str, str]:
         author = _author(root, query)    # each repo's own user, like the CLI
         # git runs ONCE per repo per request; markdown and JSON share the facts
         commits = gitlog_mod.commits_since(root, since, author, until)
-        in_progress = gitlog_mod.uncommitted(root)
+        in_progress = gitlog_mod.uncommitted_for(root, author)
         if weekly:
             md = digest_mod.weekly_markdown(root, author, since, until,
                                             commits=commits)

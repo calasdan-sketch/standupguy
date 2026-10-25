@@ -937,6 +937,7 @@ class TestPyprojectMetadata(unittest.TestCase):
             "Programming Language :: Python :: 3.11",
             "Programming Language :: Python :: 3.12",
             "Programming Language :: Python :: 3.13",
+            "Programming Language :: Python :: 3.14",
             "Topic :: Software Development :: Version Control :: Git",
         ])
         self.assertEqual(self.project["requires-python"], ">=3.10")
@@ -948,6 +949,7 @@ class TestPyprojectMetadata(unittest.TestCase):
         self.assertEqual(self.project["urls"], {
             "Homepage": "https://github.com/calasdan-sketch/standupguy",
             "Issues": "https://github.com/calasdan-sketch/standupguy/issues",
+            "Changelog": "https://github.com/calasdan-sketch/standupguy/blob/main/CHANGELOG.md",
         })
 
 

@@ -436,6 +436,34 @@ def uncommitted(root: str) -> list[str]:
     return paths
 
 
+def _config(root: str, key: str) -> str:
+    try:
+        return _git(root, "config", key).strip()
+    except (GitNotFound, GitTimeout):
+        raise
+    except RuntimeError:
+        return ""
+
+
+def is_current_user(root: str, author: str | None) -> bool:
+    """Is `author` (the --author value) the person running git here?
+    No filter (--all) counts as yes. Otherwise the whole value must equal
+    this repo's user.email or user.name (case-insensitive): a substring such
+    as "dan" may mean somebody else."""
+    if author is None:
+        return True
+    n = _fold(author)
+    return bool(n) and n in (_fold(_config(root, "user.email")),
+                             _fold(_config(root, "user.name")))
+
+
+def uncommitted_for(root: str, author: str | None) -> list[str]:
+    """The uncommitted files, but only when they are `author`'s: the working
+    tree belongs to the local git user, so a digest for a teammate must not
+    list it as their work in progress."""
+    return uncommitted(root) if is_current_user(root, author) else []
+
+
 def default_author(root: str) -> str:
     try:
         return _git(root, "config", "user.email").strip()

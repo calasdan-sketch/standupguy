@@ -3,3 +3,4 @@
 # so the tests can be run from the sdist.
 recursive-include tests *.py
 recursive-include workflows *.json
+include CHANGELOG.md

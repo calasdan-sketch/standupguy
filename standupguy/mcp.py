@@ -27,7 +27,7 @@ from . import digest as digest_mod
 from . import gitlog as gitlog_mod
 from . import stdio as stdio_mod
 
-SERVER_INFO = {"name": "standupguy", "version": "0.1.3"}
+SERVER_INFO = {"name": "standupguy", "version": "0.1.4"}
 
 TOOL_NAME = "what_did_i_ship"
 

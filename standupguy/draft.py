@@ -1,7 +1,7 @@
 """Draft: turn a digest into Yesterday/Today/Blockers prose via a local model.
 
 Local-first: the default endpoint is Ollama on localhost. Point
-AUTOSTANDUP_BASE_URL at freellmapi or any OpenAI-compatible endpoint.
+STANDUPGUY_BASE_URL (or the older AUTOSTANDUP_BASE_URL) at freellmapi or any OpenAI-compatible endpoint.
 Your git history never leaves the machine except to the endpoint YOU
 configured. No cloud SaaS, no data-leak ceremony.
 
@@ -17,10 +17,12 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import config
 from . import stdio as stdio_mod
 
 
@@ -159,10 +161,10 @@ def _let_go(error) -> None:
 
 def _cfg(base_url=None, api_key=None, model=None):
     return {
-        "base_url": (base_url or os.environ.get("AUTOSTANDUP_BASE_URL")
+        "base_url": (base_url or config.env("BASE_URL")
                      or "http://localhost:11434/v1").rstrip("/"),
-        "api_key": api_key or os.environ.get("AUTOSTANDUP_API_KEY") or "ollama",
-        "model": model or os.environ.get("AUTOSTANDUP_MODEL") or "llama3.1",
+        "api_key": api_key or config.env("API_KEY") or "ollama",
+        "model": model or config.env("MODEL") or "llama3.1",
     }
 
 
@@ -186,15 +188,39 @@ def _snippet(raw: bytes, limit: int = 80) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def insecure_key_warning(base_url: str, api_key: str) -> str | None:
+    """A warning when the API key would travel over plain http:// to a host
+    that is not this computer (anyone on the path can read it)."""
+    if not api_key or api_key == "ollama":
+        return None
+    try:
+        parts = urllib.parse.urlsplit(base_url)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return None
+    if parts.scheme.lower() != "http" or host in _LOCAL_HOSTS \
+            or host.startswith("127."):
+        return None
+    return (f"warning: the model URL {_shown_origin(base_url)} is plain "
+            f"http:// and not this computer: your API key is sent unencrypted "
+            f"(use https://)")
+
+
 def draft(digest_md: str, *, base_url=None, api_key=None, model=None,
           timeout: int = 120) -> str:
     digest_md = _cap_digest(digest_md)
     cfg = _cfg(base_url, api_key, model)
     shown = _shown_url(cfg["base_url"])
+    warning = insecure_key_warning(cfg["base_url"], cfg["api_key"])
+    if warning:
+        print(warning, file=sys.stderr)
     problem = _key_problem(cfg["api_key"])
     if problem:
         # said before anything is sent, and without repeating the key
-        raise DraftError(f"the API key (AUTOSTANDUP_API_KEY) has {problem}; "
+        raise DraftError(f"the API key (STANDUPGUY_API_KEY) has {problem}; "
                          f"nothing was sent")
     body = json.dumps({
         "model": cfg["model"],
@@ -214,13 +240,13 @@ def draft(digest_md: str, *, base_url=None, api_key=None, model=None,
         raise DraftError(
             f"model at {shown} answered with a redirect to "
             f"{_shown_origin(e.where)}; it was not followed and your API key "
-            f"was not sent there (set AUTOSTANDUP_BASE_URL to the final "
+            f"was not sent there (set STANDUPGUY_BASE_URL to the final "
             f"address)") from None
     except urllib.error.URLError as e:
         _let_go(e)
         raise DraftError(
             f"cannot reach model at {shown} "
-            f"(set AUTOSTANDUP_BASE_URL): {_plain(e.reason)}") from None
+            f"(set STANDUPGUY_BASE_URL): {_plain(e.reason)}") from None
     except http.client.InvalidURL:
         # its message quotes the whole request path, query string included
         raise DraftError(
