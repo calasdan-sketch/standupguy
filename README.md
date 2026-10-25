@@ -264,7 +264,9 @@ The older `AUTOSTANDUP_BASE_URL`, `AUTOSTANDUP_MODEL`, `AUTOSTANDUP_API_KEY`
 and `AUTOSTANDUP_SLACK_WEBHOOK` still work: `STANDUPGUY_*` is read first,
 the old name is the fallback. If the model URL is plain `http://` and not
 this computer (and you set an API key), `--draft` warns on stderr that the
-key travels unencrypted.
+key travels unencrypted. "This computer" means the name `localhost`, an IP
+address that is a loopback address (`127.x.x.x`, `::1`) or `0.0.0.0`; a
+name that merely starts with `127.` or `localhost` is not.
 
 - **Multi-repo (`--root A --root B`):** one section per repo, in the
   order given, in every mode; `--format json` then returns

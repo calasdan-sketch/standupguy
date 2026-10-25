@@ -15,6 +15,7 @@ or query string of the endpoint's URL, not the text of an HTTP-library error
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import os
 import sys
@@ -188,7 +189,25 @@ def _snippet(raw: bytes, limit: int = 80) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
-_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+def _is_this_computer(host: str) -> bool:
+    """Is ``host`` (as urlsplit(...).hostname gives it) this computer?
+    Only what cannot be anywhere else: the name `localhost`, an IP address
+    that is a loopback address (127.0.0.0/8, ::1, the same inside ::ffff:),
+    or 0.0.0.0. A NAME is never trusted because of how it starts: `127.evil.com`
+    is a host on the internet. A spelling that is neither a name nor a
+    plain address (`127.1`) is treated as not local, which only means a
+    warning that was not needed."""
+    host = host.lower().rstrip(".")
+    if host == "localhost":
+        return True
+    try:
+        addr = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    return addr.is_loopback or str(addr) == "0.0.0.0"
 
 
 def insecure_key_warning(base_url: str, api_key: str) -> str | None:
@@ -201,8 +220,7 @@ def insecure_key_warning(base_url: str, api_key: str) -> str | None:
         host = (parts.hostname or "").lower()
     except ValueError:
         return None
-    if parts.scheme.lower() != "http" or host in _LOCAL_HOSTS \
-            or host.startswith("127."):
+    if parts.scheme.lower() != "http" or _is_this_computer(host):
         return None
     return (f"warning: the model URL {_shown_origin(base_url)} is plain "
             f"http:// and not this computer: your API key is sent unencrypted "

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+
+- `--draft`: the unencrypted-key warning no longer treats every host that starts with `127.` as this computer (`http://127.evil.com` is on the internet). Only `localhost`, a real loopback address (`127.x.x.x`, `::1`, also written `::ffff:127.0.0.1`) and `0.0.0.0` count as this computer.
+- Release workflow: the tag is checked against the version of the built files (`.github/scripts/release_check.py`), and a tag whose commit is not on `main` is refused. CI builds the source archive and runs the tests from the unpacked archive.
+
 ## 0.1.4
 
 - `--author X` no longer lists your own uncommitted files as X's "In progress" work. The section (and `in_progress` in JSON, the sprint "Carried over" list, and the `serve` / `mcp` `author` option) now appears only for you, meaning `--author` equals your git `user.email` or `user.name`, or with `--all`.

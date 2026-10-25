@@ -32,7 +32,7 @@ from . import push as push_mod
 from . import serve as serve_mod
 from . import stdio as stdio_mod
 
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 
 
 def _harden_streams() -> None:
