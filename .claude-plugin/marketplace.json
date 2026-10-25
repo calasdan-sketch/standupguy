@@ -1,0 +1,14 @@
+{
+  "name": "standupguy",
+  "description": "Standup notes from your git history",
+  "owner": {
+    "name": "Dan Calas"
+  },
+  "plugins": [
+    {
+      "name": "standupguy",
+      "source": "./plugins/standupguy",
+      "description": "/standupguy:standup writes your standup from your git history (needs the standupguy command: pip install standupguy)"
+    }
+  ]
+}

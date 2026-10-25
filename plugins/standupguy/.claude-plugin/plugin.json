@@ -1,0 +1,11 @@
+{
+  "name": "standupguy",
+  "version": "0.2.0",
+  "description": "Write your standup from your git history. Adds the /standupguy:standup skill, which runs the standupguy command.",
+  "author": {
+    "name": "Dan Calas"
+  },
+  "repository": "https://github.com/calasdan-sketch/standupguy",
+  "license": "MIT",
+  "keywords": ["standup", "git", "digest"]
+}

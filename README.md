@@ -37,6 +37,7 @@ standupguy --sprint --since 2026-10-01 --until 2026-10-14   # ...or an exact ran
 standupguy --since 2026-10-01       # custom range (--until optional, inclusive)
 standupguy --root ../api --root ../web   # several repos: one section per repo
 standupguy --draft                  # LLM prose: Yesterday / Today / Blockers
+standupguy --draft --verify         # ...and mark Yesterday statements no commit backs up
 standupguy --format json            # machine-readable digest
 standupguy --author "teammate@co"   # filter (default: your git user); no "In progress"
                                     # section then: your working tree is not theirs
@@ -218,6 +219,92 @@ _since 2026-10-14_
 ## Blockers
 _none reported — fill in yours_
 ```
+
+## Agent ledger
+
+When some of the commits in a digest carry a `Co-Authored-By:` line that
+names Claude (Claude Code adds `Co-Authored-By: Claude <noreply@anthropic.com>`
+to the commits it makes), the digest ends its commit list with a count:
+
+```markdown
+## Agent ledger
+- 2 of 3 commits (67%) credit Claude as a co-author
+- Claude Opus 4.5: 1, Claude Sonnet 5.5: 1
+_Counted from `Co-Authored-By:` lines in the commit messages: it shows what the commits say, not how the code was written._
+```
+
+It is a plain count of what the commit messages say, so it is the same every
+time you run it. A commit made with an agent that adds no such line is not
+counted, and anyone can type the line by hand. A line counts when its name or
+address contains `claude` or ends in `@anthropic.com`. The block is left out
+when no commit credits Claude; `--format json` always has an `agent_ledger`
+object (`commits`, `with_agent`, `agents`; `null` if git could not be
+asked). It also appears in the weekly and sprint digests and in `serve`.
+
+## Checking a draft (`--verify`)
+
+`--draft` asks a model to write Yesterday / Today / Blockers from the digest,
+and a model can state something that never happened. With `--verify` every
+statement under **Yesterday** that no commit backs up is marked, in the text
+that is printed or posted:
+
+```
+Yesterday:
+- Added the billing export.
+- Rewrote the payment gateway in Rust.  [unverified: no matching commit]
+```
+
+A statement is backed up when it names a commit (a sha of 7+ characters, or a
+pull request number such as `#42`) that exists in the digest, or shares at
+least one meaningful word with a commit: its subject, or the name of a file
+or folder it touched. A sha or PR number that no commit has is flagged
+whatever else the sentence says. This is a **word-overlap check**: it catches
+an invented topic; it does not catch a wrong detail about a real topic
+("fixed the login bug" passes if some commit mentions login), and a true
+statement that shares none of a commit's words is flagged anyway. Today and
+Blockers are plans and are not checked. `--verify` needs `--draft`. A summary
+goes to stderr; the exit code does not change. Nothing extra is sent anywhere.
+
+## Claude Code plugin (`/standupguy:standup`)
+
+This repository is also a Claude Code plugin marketplace. Install the
+`standupguy` command first (`pip install standupguy`), then in Claude Code:
+
+```
+/plugin marketplace add calasdan-sketch/standupguy
+/plugin install standupguy@standupguy
+```
+
+(or `claude plugin marketplace add calasdan-sketch/standupguy` and `claude
+plugin install standupguy@standupguy` in a shell). The plugin adds one skill.
+Plugin skills are namespaced, so you run it as `/standupguy:standup`; Claude
+may also use it when you ask for a standup. It runs `standupguy --format json`
+(pre-approved for that command only), reads the result and writes Yesterday /
+Today / Blockers using only what the commits say. Arguments go to the
+command: `/standupguy:standup --week`, `/standupguy:standup --all`.
+
+Note what this changes about "your history never leaves your laptop": the
+skill hands the digest to Claude, so it goes to the model provider your Claude
+Code uses. The deterministic digest, `--draft` with a local model and `serve`
+are unchanged. The layout (`.claude-plugin/marketplace.json`,
+`plugins/standupguy/.claude-plugin/plugin.json`,
+`plugins/standupguy/skills/standup/SKILL.md`) follows
+https://code.claude.com/docs/en/plugin-marketplaces and passed
+`claude plugin validate` and a local `claude plugin install` (Claude Code
+2.1.310); the skill itself has not been run in a live session here.
+
+## A daily digest in GitHub Actions
+
+[`examples/standup-digest.yml`](examples/standup-digest.yml) is a ready-made
+workflow: copy it to `.github/workflows/standup-digest.yml`. On weekdays at
+08:17 UTC (and by hand, for yesterday or the week) it installs a pinned
+`standupguy`, builds the digest of every author's commits (a runner has no
+"you") and writes it to the run's summary page. It asks for read access to
+the repository only and needs no secret. To also post it to Slack, add a
+repository secret `STANDUPGUY_SLACK_WEBHOOK`; without it that step prints a
+line and does nothing. The steps were run locally against a cloned repository
+with a stand-in for the runner's environment; the workflow itself has not run
+on GitHub.
 
 ## How it works
 
@@ -429,6 +516,10 @@ sdist and the wheel need a setuptools of 77 or later (with `packaging` 24.2
 or later) already installed - they work offline and download nothing.
 
 ## Limitations
+
+- **0.2.0 was run on Linux only** (Python 3.10, 3.13 and 3.14 and the unpacked
+  source archive), not on Windows or macOS, not in a live Claude Code session,
+  and the Actions example not on GitHub.
 
 - **Dates.** Weekday names (`last monday`), `N months ago` and `N years ago`
   are worked out by git, not by `standupguy`; *Date handling* says what

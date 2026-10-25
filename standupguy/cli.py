@@ -31,8 +31,9 @@ from . import mcp as mcp_mod
 from . import push as push_mod
 from . import serve as serve_mod
 from . import stdio as stdio_mod
+from . import verify as verify_mod
 
-VERSION = "0.1.5"
+VERSION = "0.2.0"
 
 
 def _harden_streams() -> None:
@@ -131,6 +132,22 @@ def _show(text: str) -> None:
     stdio_mod.stdout().write(stdio_mod.printable(text))
 
 
+def _verify_draft(draft: str, results: list) -> str:
+    """The draft with every Yesterday statement that no commit backs up
+    marked, and a one-line summary on stderr."""
+    commits = [c for _, payload in results for c in payload["commits"]]
+    marked, flagged = verify_mod.verify(draft, commits)
+    if flagged:
+        print(f"verify: {len(flagged)} statement(s) in Yesterday have no "
+              f"matching commit and are marked {verify_mod.MARK}; check them "
+              f"before you share the notes", file=sys.stderr)
+    else:
+        print("verify: every statement in Yesterday matches a commit (a "
+              "word-overlap check: it cannot tell a wrong detail from a "
+              "right one)", file=sys.stderr)
+    return marked
+
+
 def cmd_digest(args) -> int:
     results = [_repo_digest(args, root) for root in args.root]
     if args.format == "json":
@@ -151,6 +168,8 @@ def cmd_digest(args) -> int:
                      if args.push_slack is not None else ""), file=sys.stderr)
             _show(md)
             return 2
+        if args.verify:
+            md = _verify_draft(md, results)
     if args.push_slack is not None:
         webhook = args.push_slack if args.push_slack is not True else \
             config_mod.env("SLACK_WEBHOOK")
@@ -226,6 +245,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "'Carried over' section (WIP commits + uncommitted work).")
     p.add_argument("--draft", action="store_true",
                    help="Draft Yesterday/Today/Blockers prose via local model.")
+    p.add_argument("--verify", action="store_true",
+                   help="With --draft: mark every statement under Yesterday "
+                        "that no commit in the digest backs up. A word-"
+                        "overlap check, not a proof; nothing is sent.")
     p.add_argument("--format", choices=["markdown", "json"],
                    default="markdown",
                    help="markdown (default) or json. json is the finished "
@@ -324,7 +347,12 @@ def _check_values(args) -> bool:
 def _check_output_flags(args) -> bool:
     """`--format json` prints the digest as JSON and stops; nothing reaches
     --draft or --push-slack. Say so (False, after printing why) instead of
-    quietly doing neither."""
+    quietly doing neither. `--verify` only means something after --draft."""
+    if args.cmd is None and args.verify and not args.draft:
+        print("error: --verify checks a draft, so it needs --draft (there "
+              "is nothing to verify in the plain digest: it is the commits)",
+              file=sys.stderr)
+        return False
     if args.cmd is not None or args.format != "json":
         return True
     named = [flag for flag, given in (("--draft", args.draft),

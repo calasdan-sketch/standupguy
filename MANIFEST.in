@@ -4,3 +4,7 @@
 recursive-include tests *.py
 recursive-include workflows *.json
 include CHANGELOG.md
+# the Claude Code plugin and the Actions example, which the tests read
+graft plugins
+graft examples
+graft .claude-plugin

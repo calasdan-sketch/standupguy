@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- Agent ledger: digests count the commits whose message has a `Co-Authored-By:` line naming Claude, per agent, and `--format json` has an `agent_ledger` object. It counts what the commits say, nothing more.
+- `--draft --verify`: statements under Yesterday that no commit backs up are marked `[unverified: no matching commit]` (a word-overlap check; the README says what it cannot catch).
+- Claude Code plugin: `.claude-plugin/marketplace.json` and `plugins/standupguy` add the skill `/standupguy:standup`, which runs `standupguy --format json`.
+- `examples/standup-digest.yml`: a scheduled GitHub Actions workflow that writes the digest to the run summary and, with a `STANDUPGUY_SLACK_WEBHOOK` secret, posts it to Slack.
+
 ## 0.1.5
 
 - `--draft`: the unencrypted-key warning no longer treats every host that starts with `127.` as this computer (`http://127.evil.com` is on the internet). Only `localhost`, a real loopback address (`127.x.x.x`, `::1`, also written `::ffff:127.0.0.1`) and `0.0.0.0` count as this computer.

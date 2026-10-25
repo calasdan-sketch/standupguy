@@ -66,6 +66,28 @@ def _commit_line(c: gitlog_mod.Commit) -> str:
     return f"- {clean}{pr}{files} `{c.sha[:7]}`"
 
 
+def ledger_lines(ledger: dict | None) -> list[str]:
+    """The "Agent ledger" block, or [] when no commit credits an agent (or
+    git could not be asked). Counted from the Co-Authored-By lines in the
+    commit messages, so it is a count of what the commits say."""
+    if not ledger or not ledger.get("with_agent"):
+        return []
+    total, n = ledger["commits"], ledger["with_agent"]
+    word = "commit" if total == 1 else "commits"
+    lines = ["## Agent ledger",
+             f"- {n} of {total} {word} ({round(n * 100 / total)}%) credit "
+             f"Claude as a co-author"]
+    if ledger.get("agents"):
+        lines.append("- " + ", ".join(f"{name}: {count}"
+                                      for name, count in
+                                      ledger["agents"].items()))
+    lines.append("_Counted from `Co-Authored-By:` lines in the commit "
+                 "messages: it shows what the commits say, not how the code "
+                 "was written._")
+    lines.append("")
+    return lines
+
+
 def _collect(root: str, since: str, author: str | None, until: str | None,
              commits: list | None, in_progress: list | None
              ) -> tuple[list, list]:
@@ -90,12 +112,15 @@ def to_json(root: str, label: str, since: str, until: str | None,
             commits: list, in_progress: list,
             markdown: str | None = None) -> dict:
     """The machine-readable digest (same keys from `--format json` and
-    from `serve`; `markdown` is included when given)."""
+    from `serve`; `markdown` is included when given). `agent_ledger` counts
+    the commits whose message credits Claude as a co-author (null when git
+    could not be asked)."""
     data = {
         "repo": gitlog_mod.repo_name(root), "label": label,
         "since": since, "until": until,
         "in_progress": in_progress,
         "commits": [commit_dict(c) for c in commits],
+        "agent_ledger": gitlog_mod.agent_ledger(root, commits),
     }
     if markdown is not None:
         data["markdown"] = markdown
@@ -123,6 +148,7 @@ def digest_markdown(root: str, since: str, label: str,
             lines.append(f"### {GROUP_TITLES[group]}")
             lines.extend(_commit_line(c) for c in items)
             lines.append("")
+        lines += ledger_lines(gitlog_mod.agent_ledger(root, commits))
     if in_progress:
         lines.append("## In progress (uncommitted)")
         lines.extend(f"- `{p}`" for p in sorted(in_progress)[:20])
@@ -164,6 +190,7 @@ def weekly_markdown(root: str, author: str | None = None,
     lines = [f"# Weekly summary — {repo}",
              f"_{len(commits)} commits {window} (local dates)_", ""]
     lines += _day_sections(_by_day(commits))
+    lines += ledger_lines(gitlog_mod.agent_ledger(root, commits))
     lines.append("## Highlights for sprint review")
     lines.append("_pick 3–5 bullets from above_")
     return "\n".join(lines) + "\n"
@@ -190,6 +217,7 @@ def sprint_markdown(root: str, since: str, until: str | None = None,
         lines += _day_sections(_by_day(shipped))
     else:
         lines += ["_no commits shipped in this window_", ""]
+    lines += ledger_lines(gitlog_mod.agent_ledger(root, shipped))
     lines.append("## Carried over")
     carried = [f"- {_commit_line(c)[2:]} _(WIP commit)_" for c in wip]
     carried += [f"- `{p}` _(uncommitted)_" for p in sorted(in_progress)[:20]]
