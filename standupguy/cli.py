@@ -23,6 +23,7 @@ import json
 import os
 import sys
 
+from . import __version__
 from . import config as config_mod
 from . import digest as digest_mod
 from . import draft as draft_mod
@@ -33,7 +34,7 @@ from . import serve as serve_mod
 from . import stdio as stdio_mod
 from . import verify as verify_mod
 
-VERSION = "0.2.0"
+VERSION = __version__
 
 
 def _harden_streams() -> None:
@@ -150,6 +151,13 @@ def _verify_draft(draft: str, results: list) -> str:
 
 def cmd_digest(args) -> int:
     results = [_repo_digest(args, root) for root in args.root]
+    if args.format == "csv":
+        rows = [(p["repo"], [gitlog_mod.Commit(
+                    c["sha"], c["author"], c["email"], c["date"], c["subject"],
+                    c["files"], c["pr"]) for c in p["commits"]])
+                for _, p in results]
+        stdio_mod.stdout().write(digest_mod.timesheet_csv(rows))
+        return 0
     if args.format == "json":
         payloads = [p for _, p in results]
         data = payloads[0] if len(payloads) == 1 else {"repos": payloads}
@@ -249,9 +257,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="With --draft: mark every statement under Yesterday "
                         "that no commit in the digest backs up. A word-"
                         "overlap check, not a proof; nothing is sent.")
-    p.add_argument("--format", choices=["markdown", "json"],
+    p.add_argument("--format", choices=["markdown", "json", "csv"],
                    default="markdown",
-                   help="markdown (default) or json. json is the finished "
+                   help="markdown (default), json, or csv (a time sheet: "
+                        "one row per day and ticket id, an empty hours "
+                        "column for you). json and csv are the finished "
                         "output: not with --draft or --push-slack.")
     p.add_argument("--push-slack", nargs="?", const=True, default=None,
                    metavar="WEBHOOK_URL",
@@ -353,7 +363,7 @@ def _check_output_flags(args) -> bool:
               "is nothing to verify in the plain digest: it is the commits)",
               file=sys.stderr)
         return False
-    if args.cmd is not None or args.format != "json":
+    if args.cmd is not None or args.format not in ("json", "csv"):
         return True
     named = [flag for flag, given in (("--draft", args.draft),
                                       ("--push-slack",
@@ -361,8 +371,8 @@ def _check_output_flags(args) -> bool:
              if given]
     if not named:
         return True
-    print(f"error: --format json cannot be combined with "
-          f"{' or '.join(named)}: the JSON is printed as it is, so nothing "
+    print(f"error: --format {args.format} cannot be combined with "
+          f"{' or '.join(named)}: it is printed as it is, so nothing "
           f"would be drafted or posted. Drop one or the other.",
           file=sys.stderr)
     return False

@@ -36,6 +36,8 @@ class DraftError(RuntimeError):
 # tokens on one repo), so the digest is truncated for the MODEL CALL only;
 # the digest printed to the terminal is untouched.
 MAX_DIGEST_CHARS = 100_000
+#: the most of a model's reply that is read (a draft is a page of text)
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 TRUNCATION_NOTE = (
     "\n\n[Note: this digest was truncated to 100,000 characters for the "
@@ -253,7 +255,14 @@ def draft(digest_md: str, *, base_url=None, api_key=None, model=None,
                      "Authorization": f"Bearer {cfg['api_key']}"})
         opener = urllib.request.build_opener(_StayOnOrigin())
         with opener.open(req, timeout=timeout) as resp:
-            raw = resp.read()
+            raw = resp.read(MAX_RESPONSE_BYTES + 1)
+        if len(raw) <= MAX_RESPONSE_BYTES and getattr(resp, "length", 0):
+            # read(n) does not notice a body cut short, read() does
+            raise http.client.IncompleteRead(raw, resp.length)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise DraftError(
+                f"model at {shown} sent more than "
+                f"{MAX_RESPONSE_BYTES // 2**20} MB; the reply was dropped")
     except _Redirected as e:
         raise DraftError(
             f"model at {shown} answered with a redirect to "

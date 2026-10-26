@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import io
 import json
+from . import __version__
 from . import _depth as depth_mod
 import os
 import sys
@@ -28,7 +29,7 @@ from . import digest as digest_mod
 from . import gitlog as gitlog_mod
 from . import stdio as stdio_mod
 
-SERVER_INFO = {"name": "standupguy", "version": "0.2.0"}
+SERVER_INFO = {"name": "standupguy", "version": __version__}
 
 TOOL_NAME = "what_did_i_ship"
 

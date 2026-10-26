@@ -1,3 +1,4 @@
+include SECURITY.md
 # setuptools puts tests/test*.py into an sdist by itself, and nothing else the
 # tests read from the checkout (tests/__init__.py, the workflow file): list it,
 # so the tests can be run from the sdist.

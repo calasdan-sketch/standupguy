@@ -333,6 +333,7 @@ class TestToken(Base):
             ask(self.server, DIGEST + f"&token={TOKEN}")
             ask(self.server, DIGEST + f"&token={TOKEN}",
                 {"Host": "evil.example"})
+            self.server.cache.clear()       # the first request was cached
             with mock.patch.object(serve_mod, "_payload",
                                    side_effect=RuntimeError("boom")):
                 status, _, _ = ask(self.server, DIGEST + f"&token={TOKEN}")

@@ -329,13 +329,22 @@ class TestACompactDate(unittest.TestCase):
 PING = b'{"jsonrpc": "2.0", "id": 1, "method": "ping"}\n'
 
 
+def git_words(cmd):
+    """The words after `git [-c k=v ...] -C <root>`: the command and its
+    arguments (git is always called with the hardening -c options first)."""
+    rest = list(cmd[1:])
+    while rest[:1] == ["-c"]:
+        rest = rest[2:]
+    return rest[2:] if rest[:1] == ["-C"] else rest
+
+
 def times_out_on(*subcommands):
     """A stand-in for subprocess.run: the git commands named here run into
     the timeout, every other command runs for real."""
     real_run = subprocess.run
 
     def run(cmd, *args, **kwargs):
-        if cmd[0] == "git" and cmd[3] in subcommands:   # git -C <root> <command>
+        if cmd[0] == "git" and git_words(cmd)[0] in subcommands:
             raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
         return real_run(cmd, *args, **kwargs)
 
@@ -412,7 +421,7 @@ class TestAGitThatDoesNotAnswer(unittest.TestCase):
         real_run = subprocess.run
 
         def second_one_hangs(cmd, *args, **kwargs):
-            if cmd[0] == "git" and cmd[3:5] == ["rev-parse", "--git-dir"]:
+            if cmd[0] == "git" and git_words(cmd)[:2] == ["rev-parse", "--git-dir"]:
                 raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
             return real_run(cmd, *args, **kwargs)
 

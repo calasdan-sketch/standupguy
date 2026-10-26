@@ -313,7 +313,8 @@ class TestBuilt(unittest.TestCase):
     def test_the_wheel_has_the_package_and_nothing_else(self):
         src = clean_source_copy()
         want = {n for n in listing(src)
-                if n.startswith("standupguy/") and n.endswith(".py")}
+                if n.startswith("standupguy/")
+                and n.endswith((".py", "/py.typed"))}
         package = {n for n in self.wheel(src)
                    if not n.split("/")[0].endswith(".dist-info")}
         self.assertEqual(package, want)

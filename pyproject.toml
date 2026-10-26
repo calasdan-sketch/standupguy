@@ -49,3 +49,6 @@ packages = ["standupguy"]
 # `python -m unittest discover -s tests` does.
 pythonpath = ["tests"]
 testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+standupguy = ["py.typed"]

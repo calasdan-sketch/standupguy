@@ -2,8 +2,11 @@
 
 ## 0.2.0
 
+- Every git call runs with `core.fsmonitor=false`, `core.hooksPath` set to the null device and `GIT_OPTIONAL_LOCKS=0`; the threat model is in the README.
+- `serve` builds at most 4 digests at once (503 when busy) and caches an identical request for 5 seconds; a draft reply is read up to 4 MB.
+- Ticket ids (`ABC-123`) are rolled up in the digest and the JSON; `--format csv` writes a time sheet (hours left empty).
+- `AUTOSTANDUP_*` is kept (documented in the README).
 - The MCP server refuses JSON nested deeper than 400 levels with its own limit (Parse error), the same on every Python version.
-
 - Agent ledger: digests count the commits whose message has a `Co-Authored-By:` line naming Claude, per agent, and `--format json` has an `agent_ledger` object. It counts what the commits say, nothing more.
 - `--draft --verify`: statements under Yesterday that no commit backs up are marked `[unverified: no matching commit]` (a word-overlap check; the README says what it cannot catch).
 - Claude Code plugin: `.claude-plugin/marketplace.json` and `plugins/standupguy` add the skill `/standupguy:standup`, which runs `standupguy --format json`.

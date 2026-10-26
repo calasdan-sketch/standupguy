@@ -57,6 +57,11 @@ GIT_NOT_FOUND_MESSAGE = (
     "Windows: Git for Windows), then open a new terminal.")
 
 
+#: `-c` options put before every git command (see _git).
+SAFE_GIT_CONFIG = ("-c", "core.fsmonitor=false",
+                   "-c", f"core.hooksPath={os.devnull}")
+
+
 def _git(root: str, *args: str, env: dict | None = None) -> str:
     full_env = dict(os.environ)
     if env:
@@ -65,9 +70,15 @@ def _git(root: str, *args: str, env: dict | None = None) -> str:
     # never with the console code page, never dying on a stray byte, and
     # never in text mode — universal newlines would turn a lone CR inside a
     # commit subject into a newline and corrupt the record around it.
+    # A repository is untrusted input: its .git/config can name a program for
+    # core.fsmonitor (run by `git status`) and a hooks folder. Both are
+    # switched off for every call, and git is told not to take optional locks
+    # (a `status` here must not write to a repo that is being worked in).
+    full_env["GIT_OPTIONAL_LOCKS"] = "0"
     try:
-        p = subprocess.run(["git", "-C", root, *args], capture_output=True,
-                           timeout=GIT_TIMEOUT, env=full_env)
+        p = subprocess.run(["git", *SAFE_GIT_CONFIG, "-C", root, *args],
+                           capture_output=True, timeout=GIT_TIMEOUT,
+                           env=full_env)
     except FileNotFoundError:
         raise GitNotFound(GIT_NOT_FOUND_MESSAGE) from None
     except subprocess.TimeoutExpired:

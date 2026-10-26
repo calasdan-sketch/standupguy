@@ -100,6 +100,81 @@ def _collect(root: str, since: str, author: str | None, until: str | None,
     return commits, in_progress
 
 
+# A ticket id as Jira and Linear write it: PROJECT-123. Words that look like
+# one but are not (UTF-8, SHA-256, ISO-8601 ...) are left out.
+_TICKET_RE = re.compile(r"(?<![A-Za-z0-9_-])([A-Z][A-Z0-9]{1,9}-\d{1,6})(?![A-Za-z0-9_])")
+_NOT_TICKETS = frozenset({
+    "UTF", "SHA", "ISO", "MD", "RFC", "CVE", "TLS", "SSL", "HTTP", "PEP",
+    "GPT", "UTC", "AES", "RSA", "TCP", "UDP", "IPV", "HS", "RS", "PS", "EC",
+    "CRC", "BLAKE", "SHAKE", "ES", "PY", "X", "WCAG", "ARM", "AMD", "DES",
+    "RC", "GB", "MB", "KB", "TB", "ISBN", "ASCII", "UNICODE", "COVID", "H"})
+
+
+def ticket_ids(subject: str) -> list[str]:
+    """Ticket ids in a commit subject, in order, each once."""
+    seen: list[str] = []
+    for m in _TICKET_RE.finditer(subject or ""):
+        tid = m.group(1)
+        if tid.rsplit("-", 1)[0] in _NOT_TICKETS or tid in seen:
+            continue
+        seen.append(tid)
+    return seen
+
+
+def tickets(commits: list) -> "OrderedDict[str, list]":
+    """Ticket id -> its commits, tickets in order of first appearance."""
+    out: OrderedDict[str, list] = OrderedDict()
+    for c in commits:
+        for tid in ticket_ids(c.subject):
+            out.setdefault(tid, []).append(c)
+    return out
+
+
+def ticket_lines(commits: list) -> list[str]:
+    """The "Tickets" block (a roll-up by ticket id), or [] when no commit
+    subject names one."""
+    groups = tickets(commits)
+    if not groups:
+        return []
+    lines = ["## Tickets"]
+    for tid, cs in groups.items():
+        n = len(cs)
+        lines.append(f"- {tid}: {n} commit{'s' if n != 1 else ''} "
+                     f"({', '.join('`' + c.sha[:7] + '`' for c in cs[:5])}"
+                     f"{', …' if n > 5 else ''})")
+    lines.append("")
+    return lines
+
+
+def _formula_safe(text: str) -> str:
+    """A spreadsheet runs a cell that starts with = + - @ (or a tab/CR) as a
+    formula: commit subjects are anyone's, so such a cell gets a leading '."""
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
+
+def timesheet_csv(rows: list[tuple[str, list]]) -> str:
+    """CSV for a time sheet: one row per (repo, day, ticket) with the number
+    of commits and their subjects; `hours` is empty for you to fill in (git
+    cannot know it). `rows` is [(repo name, commits)]. Commits naming no
+    ticket are grouped under an empty ticket."""
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(["date", "repo", "ticket", "commits", "summary", "hours"])
+    for repo, commits in rows:
+        cells: OrderedDict[tuple, list] = OrderedDict()
+        for c in sorted(commits, key=lambda c: c.date):
+            ids = ticket_ids(c.subject) or [""]
+            for tid in ids:
+                cells.setdefault((c.date, tid), []).append(c)
+        for (day, tid), cs in cells.items():
+            summary = "; ".join(classify(c.subject)[1] for c in cs)
+            w.writerow([day, _formula_safe(repo), tid, len(cs),
+                        _formula_safe(summary), ""])
+    return buf.getvalue()
+
+
 def commit_dict(c: gitlog_mod.Commit) -> dict:
     """The one JSON shape for a commit, shared by the CLI and the HTTP
     bridge (`sha, author, email, date, subject, files, pr, wip`)."""
@@ -120,6 +195,8 @@ def to_json(root: str, label: str, since: str, until: str | None,
         "since": since, "until": until,
         "in_progress": in_progress,
         "commits": [commit_dict(c) for c in commits],
+        "tickets": {tid: [c.sha for c in cs]
+                    for tid, cs in tickets(commits).items()},
         "agent_ledger": gitlog_mod.agent_ledger(root, commits),
     }
     if markdown is not None:
@@ -148,6 +225,7 @@ def digest_markdown(root: str, since: str, label: str,
             lines.append(f"### {GROUP_TITLES[group]}")
             lines.extend(_commit_line(c) for c in items)
             lines.append("")
+        lines += ticket_lines(commits)
         lines += ledger_lines(gitlog_mod.agent_ledger(root, commits))
     if in_progress:
         lines.append("## In progress (uncommitted)")

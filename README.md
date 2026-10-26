@@ -2,6 +2,8 @@
 
 Kill the tracker trap without leaking data.
 
+**Limits:** It writes your standup from your own git history; it sees only commits it can read, and a draft made with a model is a draft you must read.
+
 Engineers lose up to 2/5 of the week to reporting busywork — duplicating
 updates across Jira, Slack, Confluence, and slide decks. AI note-takers are
 cloud SaaS with data-leak concerns. `standupguy` is the local-first
@@ -408,6 +410,32 @@ name that merely starts with `127.` or `localhost` is not.
   and query string of the model URL, and the Slack webhook URL are never
   shown in an error message.
 
+## Threat model, tickets and the time sheet
+
+**A repository is untrusted input.** standupguy runs `git log`, `status` and
+`config` in the folders you point it at. A repository you cloned can carry a
+`.git/config` that names a program for `core.fsmonitor` (run by `git status`)
+or a hooks folder. Every git call here therefore passes `-c
+core.fsmonitor=false -c core.hooksPath=<null device>` and sets
+`GIT_OPTIONAL_LOCKS=0` (no optional lock files written into the repository).
+That closes those two routes; it is not a sandbox: git itself, your global git
+configuration and the commit text still come from outside. The `serve` bridge
+answers at most 4 digests at once (others wait up to 30 s, then get 503) and
+reuses an identical request for 5 seconds, so a commit made a moment ago can
+take that long to appear. A model reply is read up to 4 MB.
+
+**Tickets.** Commit subjects naming `ABC-123` (Jira or Linear style) are rolled
+up in a `## Tickets` block and in the JSON as `tickets`. Look-alikes such as
+`UTF-8`, `SHA-256` or `ISO-8601` are ignored.
+
+**Time sheet.** `--format csv` prints `date,repo,ticket,commits,summary,hours`,
+one row per day and ticket (commits without a ticket have an empty ticket
+cell). `hours` is empty: git cannot know it. Cells that start with `=`, `+`,
+`-` or `@` get a leading `'` so a spreadsheet does not run them as formulas.
+
+The older `AUTOSTANDUP_*` variable names are kept: the README documents them
+and existing setups use them.
+
 ## Date handling
 
 Git's date parser fills in the **current time of day** for a bare date or
@@ -474,7 +502,7 @@ today is today's work.
 
 ## Windows
 
-Works on Windows 11 / Python 3.11: git output is decoded as UTF-8 (paths
+Written for Windows (developed on Linux; what is proven is what this repo's CI matrix runs: Ubuntu, Windows and macOS on Python 3.10, 3.12 and 3.14): git output is decoded as UTF-8 (paths
 and authors come back raw, never `caf\303\251.py`), non-ASCII commit
 subjects (or the 🌱) print on a cp1252 console without
 `UnicodeEncodeError` — unencodable characters are replaced — and the MCP
