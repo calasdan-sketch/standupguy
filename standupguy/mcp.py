@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import io
 import json
+from . import _depth as depth_mod
 import os
 import sys
 
@@ -232,7 +233,7 @@ def serve(roots=None, stdin=None, stdout=None) -> int:
         if not line:
             continue
         try:
-            request = json.loads(line)
+            request = depth_mod.loads(line)
         except (ValueError, RecursionError):   # RecursionError: "[[[[..."
             response = _error(None, PARSE_ERROR, "Parse error")
         else:

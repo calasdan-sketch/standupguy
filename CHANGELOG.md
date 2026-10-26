@@ -2,6 +2,8 @@
 
 ## 0.2.0
 
+- The MCP server refuses JSON nested deeper than 400 levels with its own limit (Parse error), the same on every Python version.
+
 - Agent ledger: digests count the commits whose message has a `Co-Authored-By:` line naming Claude, per agent, and `--format json` has an `agent_ledger` object. It counts what the commits say, nothing more.
 - `--draft --verify`: statements under Yesterday that no commit backs up are marked `[unverified: no matching commit]` (a word-overlap check; the README says what it cannot catch).
 - Claude Code plugin: `.claude-plugin/marketplace.json` and `plugins/standupguy` add the skill `/standupguy:standup`, which runs `standupguy --format json`.
