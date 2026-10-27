@@ -12,6 +12,7 @@ S-1  `standupguy serve` hands the whole history (every author, e-mail address
 """
 
 import contextlib
+import errno
 import http.client
 import inspect
 import io
@@ -613,10 +614,26 @@ class TestExposure(Base):
                 else:
                     self.fail("served the history to the network")
 
+    def test_binding_never_asks_the_resolver_for_a_name(self):
+        # macOS can block for a minute in socket.getfqdn(); the refusal and
+        # the banner must not wait for it
+        from unittest import mock
+        with mock.patch("socket.getfqdn", side_effect=AssertionError("dns")):
+            server = serve_mod.make_server(self.repo, "127.0.0.1", 0)
+            server.server_close()
+
     def test_the_loopback_names_need_no_token(self):
         for host in ("127.0.0.1", "localhost", "127.0.0.2"):
             with self.subTest(host):
-                server = serve_mod.make_server(self.repo, host, 0)
+                try:
+                    server = serve_mod.make_server(self.repo, host, 0)
+                except OSError as e:
+                    # macOS has only 127.0.0.1 on lo0 unless aliased; the
+                    # extra 127.x addresses are not there to bind
+                    if host == "127.0.0.2" and e.errno in (
+                            errno.EADDRNOTAVAIL, 49, 99, 10049):
+                        self.skipTest("127.0.0.2 is not assigned here")
+                    raise
                 server.server_close()
 
     def test_a_token_makes_a_wildcard_bind_acceptable(self):

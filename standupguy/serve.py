@@ -69,6 +69,7 @@ import re
 import sys
 import threading
 import time
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote_plus
 
@@ -255,6 +256,16 @@ class ThreadedBridgeServer(ThreadingHTTPServer):
     # (and take part of its requests), so "port in use" would never be an
     # error there. Leave it off on Windows.
     allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        # http.server's own version asks the resolver for the host's
+        # fully-qualified name (a reverse DNS lookup). On macOS that can
+        # block for a minute or more, long before the banner or the
+        # refusal is printed, and nothing here uses the name.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
 
     roots: list   # the repos this server answers for (set by make_server)
     guard: "Guard"           # who may ask (set by make_server)
