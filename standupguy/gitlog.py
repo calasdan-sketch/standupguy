@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import functools
 import os
 import re
 import secrets
@@ -56,6 +57,11 @@ GIT_NOT_FOUND_MESSAGE = (
     "Windows: Git for Windows), then open a new terminal.")
 
 
+#: `-c` options put before every git command (see _git).
+SAFE_GIT_CONFIG = ("-c", "core.fsmonitor=false",
+                   "-c", f"core.hooksPath={os.devnull}")
+
+
 def _git(root: str, *args: str, env: dict | None = None) -> str:
     full_env = dict(os.environ)
     if env:
@@ -64,9 +70,15 @@ def _git(root: str, *args: str, env: dict | None = None) -> str:
     # never with the console code page, never dying on a stray byte, and
     # never in text mode — universal newlines would turn a lone CR inside a
     # commit subject into a newline and corrupt the record around it.
+    # A repository is untrusted input: its .git/config can name a program for
+    # core.fsmonitor (run by `git status`) and a hooks folder. Both are
+    # switched off for every call, and git is told not to take optional locks
+    # (a `status` here must not write to a repo that is being worked in).
+    full_env["GIT_OPTIONAL_LOCKS"] = "0"
     try:
-        p = subprocess.run(["git", "-C", root, *args], capture_output=True,
-                           timeout=GIT_TIMEOUT, env=full_env)
+        p = subprocess.run(["git", *SAFE_GIT_CONFIG, "-C", root, *args],
+                           capture_output=True, timeout=GIT_TIMEOUT,
+                           env=full_env)
     except FileNotFoundError:
         raise GitNotFound(GIT_NOT_FOUND_MESSAGE) from None
     except subprocess.TimeoutExpired:
@@ -436,6 +448,34 @@ def uncommitted(root: str) -> list[str]:
     return paths
 
 
+def _config(root: str, key: str) -> str:
+    try:
+        return _git(root, "config", key).strip()
+    except (GitNotFound, GitTimeout):
+        raise
+    except RuntimeError:
+        return ""
+
+
+def is_current_user(root: str, author: str | None) -> bool:
+    """Is `author` (the --author value) the person running git here?
+    No filter (--all) counts as yes. Otherwise the whole value must equal
+    this repo's user.email or user.name (case-insensitive): a substring such
+    as "dan" may mean somebody else."""
+    if author is None:
+        return True
+    n = _fold(author)
+    return bool(n) and n in (_fold(_config(root, "user.email")),
+                             _fold(_config(root, "user.name")))
+
+
+def uncommitted_for(root: str, author: str | None) -> list[str]:
+    """The uncommitted files, but only when they are `author`'s: the working
+    tree belongs to the local git user, so a digest for a teammate must not
+    list it as their work in progress."""
+    return uncommitted(root) if is_current_user(root, author) else []
+
+
 def default_author(root: str) -> str:
     try:
         return _git(root, "config", "user.email").strip()
@@ -468,3 +508,86 @@ def repo_name(root: str) -> str:
     elif name.endswith(".git"):
         name = name[:-4]
     return name or root
+
+
+# -- the agent ledger --------------------------------------------------------
+#
+# Which commits say an AI agent helped write them? Only what the commit
+# message says: a line that starts "Co-Authored-By:" whose name or address
+# names Claude (Claude Code adds `Co-Authored-By: Claude <noreply@anthropic.com>`
+# by default). That is a count of what the commits declare - an agent that
+# adds no such line is not counted, and a person can type the line by hand -
+# so the digest says "credit", never "wrote".
+
+_CO_AUTHOR_RE = re.compile(r"^[ \t]*co-authored-by:[ \t]*(.+?)[ \t]*$",
+                           re.IGNORECASE | re.MULTILINE)
+#: Commits asked about per git call (keeps the command line short on Windows).
+_LEDGER_CHUNK = 100
+_LABEL_MAX = 60
+
+
+def _agent_label(value: str) -> str | None:
+    """The agent named by one Co-Authored-By value ("Claude Sonnet 5.5
+    <noreply@anthropic.com>" -> "Claude Sonnet 5.5"), or None when the value
+    does not name Claude."""
+    name, _, rest = value.partition("<")
+    email = rest.partition(">")[0].strip().lower()
+    name = " ".join("".join(ch if ch.isprintable() else " " for ch in name)
+                    .split())
+    if not ("claude" in name.lower() or "claude" in email
+            or email.endswith("@anthropic.com")):
+        return None
+    return (name or "Claude")[:_LABEL_MAX]
+
+
+def agents_in_message(message: str) -> list[str]:
+    """The distinct agents (in order of appearance) a commit message credits."""
+    out: list[str] = []
+    for value in _CO_AUTHOR_RE.findall(message or ""):
+        label = _agent_label(value)
+        if label and label not in out:
+            out.append(label)
+    return out
+
+
+@functools.lru_cache(maxsize=32)
+def _ledger(root: str, shas: tuple) -> dict | None:
+    token = secrets.token_hex(8)         # see _log_format
+    rs, us = "\x1e" + token, "\x1f" + token
+    wanted = set(shas)
+    per_commit: dict[str, list[str]] = {}
+    try:
+        for i in range(0, len(shas), _LEDGER_CHUNK):
+            out = _git(root, "log", "--no-walk=unsorted", "-z",
+                       f"--pretty=format:%x1e{token}%H%x1f{token}%B",
+                       *shas[i:i + _LEDGER_CHUNK], "--")
+            for record in out.split(rs):
+                sha, sep, message = record.partition(us)
+                sha = sha.strip("\0\n")
+                if sep and sha in wanted:
+                    per_commit[sha] = agents_in_message(message)
+    except (GitNotFound, GitTimeout):
+        raise
+    except RuntimeError:
+        return None
+    by_agent: dict[str, int] = {}
+    with_agent = 0
+    for sha in shas:
+        labels = per_commit.get(sha) or []
+        if labels:
+            with_agent += 1
+        for label in labels:
+            by_agent[label] = by_agent.get(label, 0) + 1
+    return {"commits": len(shas), "with_agent": with_agent,
+            "agents": dict(sorted(by_agent.items(),
+                                  key=lambda kv: (-kv[1], kv[0])))}
+
+
+def agent_ledger(root: str, commits: list) -> dict | None:
+    """{"commits": N, "with_agent": K, "agents": {"Claude Sonnet 5.5": 2}}
+    for these commits, counted from their messages; None when git could not
+    be asked. Deterministic: the same commits always give the same answer."""
+    shas = tuple(dict.fromkeys(c.sha for c in commits))
+    if not shas:
+        return {"commits": 0, "with_agent": 0, "agents": {}}
+    return _ledger(root, shas)

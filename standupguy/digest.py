@@ -66,6 +66,28 @@ def _commit_line(c: gitlog_mod.Commit) -> str:
     return f"- {clean}{pr}{files} `{c.sha[:7]}`"
 
 
+def ledger_lines(ledger: dict | None) -> list[str]:
+    """The "Agent ledger" block, or [] when no commit credits an agent (or
+    git could not be asked). Counted from the Co-Authored-By lines in the
+    commit messages, so it is a count of what the commits say."""
+    if not ledger or not ledger.get("with_agent"):
+        return []
+    total, n = ledger["commits"], ledger["with_agent"]
+    word = "commit" if total == 1 else "commits"
+    lines = ["## Agent ledger",
+             f"- {n} of {total} {word} ({round(n * 100 / total)}%) credit "
+             f"Claude as a co-author"]
+    if ledger.get("agents"):
+        lines.append("- " + ", ".join(f"{name}: {count}"
+                                      for name, count in
+                                      ledger["agents"].items()))
+    lines.append("_Counted from `Co-Authored-By:` lines in the commit "
+                 "messages: it shows what the commits say, not how the code "
+                 "was written._")
+    lines.append("")
+    return lines
+
+
 def _collect(root: str, since: str, author: str | None, until: str | None,
              commits: list | None, in_progress: list | None
              ) -> tuple[list, list]:
@@ -74,8 +96,83 @@ def _collect(root: str, since: str, author: str | None, until: str | None,
     if commits is None:
         commits = gitlog_mod.commits_since(root, since, author, until)
     if in_progress is None:
-        in_progress = gitlog_mod.uncommitted(root)
+        in_progress = gitlog_mod.uncommitted_for(root, author)
     return commits, in_progress
+
+
+# A ticket id as Jira and Linear write it: PROJECT-123. Words that look like
+# one but are not (UTF-8, SHA-256, ISO-8601 ...) are left out.
+_TICKET_RE = re.compile(r"(?<![A-Za-z0-9_-])([A-Z][A-Z0-9]{1,9}-\d{1,6})(?![A-Za-z0-9_])")
+_NOT_TICKETS = frozenset({
+    "UTF", "SHA", "ISO", "MD", "RFC", "CVE", "TLS", "SSL", "HTTP", "PEP",
+    "GPT", "UTC", "AES", "RSA", "TCP", "UDP", "IPV", "HS", "RS", "PS", "EC",
+    "CRC", "BLAKE", "SHAKE", "ES", "PY", "X", "WCAG", "ARM", "AMD", "DES",
+    "RC", "GB", "MB", "KB", "TB", "ISBN", "ASCII", "UNICODE", "COVID", "H"})
+
+
+def ticket_ids(subject: str) -> list[str]:
+    """Ticket ids in a commit subject, in order, each once."""
+    seen: list[str] = []
+    for m in _TICKET_RE.finditer(subject or ""):
+        tid = m.group(1)
+        if tid.rsplit("-", 1)[0] in _NOT_TICKETS or tid in seen:
+            continue
+        seen.append(tid)
+    return seen
+
+
+def tickets(commits: list) -> "OrderedDict[str, list]":
+    """Ticket id -> its commits, tickets in order of first appearance."""
+    out: OrderedDict[str, list] = OrderedDict()
+    for c in commits:
+        for tid in ticket_ids(c.subject):
+            out.setdefault(tid, []).append(c)
+    return out
+
+
+def ticket_lines(commits: list) -> list[str]:
+    """The "Tickets" block (a roll-up by ticket id), or [] when no commit
+    subject names one."""
+    groups = tickets(commits)
+    if not groups:
+        return []
+    lines = ["## Tickets"]
+    for tid, cs in groups.items():
+        n = len(cs)
+        lines.append(f"- {tid}: {n} commit{'s' if n != 1 else ''} "
+                     f"({', '.join('`' + c.sha[:7] + '`' for c in cs[:5])}"
+                     f"{', …' if n > 5 else ''})")
+    lines.append("")
+    return lines
+
+
+def _formula_safe(text: str) -> str:
+    """A spreadsheet runs a cell that starts with = + - @ (or a tab/CR) as a
+    formula: commit subjects are anyone's, so such a cell gets a leading '."""
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
+
+def timesheet_csv(rows: list[tuple[str, list]]) -> str:
+    """CSV for a time sheet: one row per (repo, day, ticket) with the number
+    of commits and their subjects; `hours` is empty for you to fill in (git
+    cannot know it). `rows` is [(repo name, commits)]. Commits naming no
+    ticket are grouped under an empty ticket."""
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(["date", "repo", "ticket", "commits", "summary", "hours"])
+    for repo, commits in rows:
+        cells: OrderedDict[tuple, list] = OrderedDict()
+        for c in sorted(commits, key=lambda c: c.date):
+            ids = ticket_ids(c.subject) or [""]
+            for tid in ids:
+                cells.setdefault((c.date, tid), []).append(c)
+        for (day, tid), cs in cells.items():
+            summary = "; ".join(classify(c.subject)[1] for c in cs)
+            w.writerow([day, _formula_safe(repo), tid, len(cs),
+                        _formula_safe(summary), ""])
+    return buf.getvalue()
 
 
 def commit_dict(c: gitlog_mod.Commit) -> dict:
@@ -90,12 +187,17 @@ def to_json(root: str, label: str, since: str, until: str | None,
             commits: list, in_progress: list,
             markdown: str | None = None) -> dict:
     """The machine-readable digest (same keys from `--format json` and
-    from `serve`; `markdown` is included when given)."""
+    from `serve`; `markdown` is included when given). `agent_ledger` counts
+    the commits whose message credits Claude as a co-author (null when git
+    could not be asked)."""
     data = {
         "repo": gitlog_mod.repo_name(root), "label": label,
         "since": since, "until": until,
         "in_progress": in_progress,
         "commits": [commit_dict(c) for c in commits],
+        "tickets": {tid: [c.sha for c in cs]
+                    for tid, cs in tickets(commits).items()},
+        "agent_ledger": gitlog_mod.agent_ledger(root, commits),
     }
     if markdown is not None:
         data["markdown"] = markdown
@@ -123,6 +225,8 @@ def digest_markdown(root: str, since: str, label: str,
             lines.append(f"### {GROUP_TITLES[group]}")
             lines.extend(_commit_line(c) for c in items)
             lines.append("")
+        lines += ticket_lines(commits)
+        lines += ledger_lines(gitlog_mod.agent_ledger(root, commits))
     if in_progress:
         lines.append("## In progress (uncommitted)")
         lines.extend(f"- `{p}`" for p in sorted(in_progress)[:20])
@@ -164,6 +268,7 @@ def weekly_markdown(root: str, author: str | None = None,
     lines = [f"# Weekly summary — {repo}",
              f"_{len(commits)} commits {window} (local dates)_", ""]
     lines += _day_sections(_by_day(commits))
+    lines += ledger_lines(gitlog_mod.agent_ledger(root, commits))
     lines.append("## Highlights for sprint review")
     lines.append("_pick 3–5 bullets from above_")
     return "\n".join(lines) + "\n"
@@ -190,6 +295,7 @@ def sprint_markdown(root: str, since: str, until: str | None = None,
         lines += _day_sections(_by_day(shipped))
     else:
         lines += ["_no commits shipped in this window_", ""]
+    lines += ledger_lines(gitlog_mod.agent_ledger(root, shipped))
     lines.append("## Carried over")
     carried = [f"- {_commit_line(c)[2:]} _(WIP commit)_" for c in wip]
     carried += [f"- `{p}` _(uncommitted)_" for p in sorted(in_progress)[:20]]

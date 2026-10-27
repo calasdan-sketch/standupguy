@@ -1,0 +1,65 @@
+# A daily standup digest of this repository, in the run's summary page.
+#
+# Copy this file to .github/workflows/standup-digest.yml in your repository.
+# It needs no secret: the digest is built from the repository's own git
+# history on the runner, by the standupguy command (https://pypi.org/project/standupguy/).
+#
+# Optional: to also post it to Slack, add a repository secret named
+# STANDUPGUY_SLACK_WEBHOOK (an incoming-webhook URL). Without the secret the
+# Slack step does nothing.
+#
+# A runner has no "you", so the digest covers every author (--all). The
+# schedule is UTC and GitHub may start a run late.
+name: Standup digest
+
+on:
+  schedule:
+    - cron: "17 8 * * 1-5"      # weekdays, 08:17 UTC
+  workflow_dispatch:
+    inputs:
+      window:
+        description: "Which commits"
+        type: choice
+        options: [yesterday, week]
+        default: yesterday
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # the digest reads history, not just the tip
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install standupguy
+        run: python -m pip install "standupguy==0.2.0"
+      - name: Build the digest
+        env:
+          WINDOW: ${{ inputs.window }}
+        run: |
+          if [ "$WINDOW" = "week" ]; then
+            standupguy --all --week > digest.md
+          else
+            standupguy --all > digest.md
+          fi
+          cat digest.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Post to Slack (only when the secret is set)
+        env:
+          STANDUPGUY_SLACK_WEBHOOK: ${{ secrets.STANDUPGUY_SLACK_WEBHOOK }}
+          WINDOW: ${{ inputs.window }}
+        run: |
+          if [ -z "$STANDUPGUY_SLACK_WEBHOOK" ]; then
+            echo "STANDUPGUY_SLACK_WEBHOOK is not set: not posting to Slack."
+            exit 0
+          fi
+          if [ "$WINDOW" = "week" ]; then
+            standupguy --all --week --push-slack
+          else
+            standupguy --all --push-slack
+          fi

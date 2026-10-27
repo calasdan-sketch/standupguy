@@ -67,6 +67,9 @@ import json
 import os
 import re
 import sys
+import threading
+import time
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote_plus
 
@@ -82,6 +85,17 @@ from . import stdio as stdio_mod
 CONNECTION_TIMEOUT = 30
 
 _TRUE = {"1", "true", "yes", "on"}
+
+#: At most this many digests are built at once; a request that finds them all
+#: busy waits up to SLOT_WAIT seconds and is then told 503.
+MAX_CONCURRENT = 4
+SLOT_WAIT = 30
+#: A digest is reused for this many seconds (same roots, same query). A
+#: commit made a moment ago can take that long to show up; 0 turns it off.
+CACHE_SECONDS = 5
+CACHE_ENTRIES = 64
+
+_now = time.monotonic       # tests replace it: no real waiting
 
 # What a client is told when a request fails inside the bridge.
 INTERNAL_ERROR = "internal error (the details are in the server's log)"
@@ -243,6 +257,16 @@ class ThreadedBridgeServer(ThreadingHTTPServer):
     # error there. Leave it off on Windows.
     allow_reuse_address = os.name != "nt"
 
+    def server_bind(self):
+        # http.server's own version asks the resolver for the host's
+        # fully-qualified name (a reverse DNS lookup). On macOS that can
+        # block for a minute or more, long before the banner or the
+        # refusal is printed, and nothing here uses the name.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
+
     roots: list   # the repos this server answers for (set by make_server)
     guard: "Guard"           # who may ask (set by make_server)
     lan_without_token: bool  # listening beyond this computer, no token
@@ -294,6 +318,9 @@ def make_server(root, host: str = "127.0.0.1", port: int = 8765, *,
     server.roots = [root] if isinstance(root, str) else list(root)
     server.guard = Guard(server.server_address[1], host, lan, secret, allowed)
     server.lan_without_token = lan and secret is None
+    server.slots = threading.BoundedSemaphore(MAX_CONCURRENT)
+    server.cache = {}
+    server.cache_lock = threading.Lock()
     return server
 
 
@@ -323,7 +350,7 @@ def _payload(roots: list, query: dict, weekly: bool) -> tuple[int, str, str]:
         author = _author(root, query)    # each repo's own user, like the CLI
         # git runs ONCE per repo per request; markdown and JSON share the facts
         commits = gitlog_mod.commits_since(root, since, author, until)
-        in_progress = gitlog_mod.uncommitted(root)
+        in_progress = gitlog_mod.uncommitted_for(root, author)
         if weekly:
             md = digest_mod.weekly_markdown(root, author, since, until,
                                             commits=commits)
@@ -366,10 +393,34 @@ class Handler(BaseHTTPRequestHandler):
                 raise
             self.close_connection = True
 
+    def _cached_payload(self, query: dict, weekly: bool):
+        """_payload through the short result cache and the request slots."""
+        server = self.server
+        key = (tuple(server.roots), weekly,
+               tuple(sorted((k, tuple(v)) for k, v in query.items()
+                            if k != "token")))   # never keep a secret
+        if CACHE_SECONDS > 0:
+            with server.cache_lock:
+                hit = server.cache.get(key)
+                if hit is not None and _now() - hit[0] < CACHE_SECONDS:
+                    return hit[1]
+        if not server.slots.acquire(timeout=SLOT_WAIT):
+            return 503, "application/json", json.dumps(
+                {"error": "busy: too many digests are being built; retry"})
+        try:
+            result = _payload(server.roots, query, weekly=weekly)
+        finally:
+            server.slots.release()
+        if CACHE_SECONDS > 0 and result[0] == 200:
+            with server.cache_lock:
+                if len(server.cache) >= CACHE_ENTRIES:
+                    server.cache.pop(next(iter(server.cache)))
+                server.cache[key] = (_now(), result)
+        return result
+
     def _digest(self, query: dict, weekly: bool) -> None:
         try:
-            status, ctype, body = _payload(self.server.roots, query,
-                                           weekly=weekly)
+            status, ctype, body = self._cached_payload(query, weekly)
         except ValueError as e:
             status, ctype, body = 400, "application/json", \
                 json.dumps({"error": str(e)})

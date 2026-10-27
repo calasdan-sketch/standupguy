@@ -23,6 +23,8 @@ import json
 import os
 import sys
 
+from . import __version__
+from . import config as config_mod
 from . import digest as digest_mod
 from . import draft as draft_mod
 from . import gitlog as gitlog_mod
@@ -30,8 +32,9 @@ from . import mcp as mcp_mod
 from . import push as push_mod
 from . import serve as serve_mod
 from . import stdio as stdio_mod
+from . import verify as verify_mod
 
-VERSION = "0.1.3"
+VERSION = __version__
 
 
 def _harden_streams() -> None:
@@ -107,7 +110,7 @@ def _repo_digest(args, root: str) -> tuple[str, dict]:
     author = _resolve_author(args, root)
     since, until, label = _window(args)
     commits = gitlog_mod.commits_since(root, since, author, until)
-    in_progress = gitlog_mod.uncommitted(root)
+    in_progress = gitlog_mod.uncommitted_for(root, author)
     if args.sprint is not None:
         md = digest_mod.sprint_markdown(root, since, until, author,
                                         commits=commits,
@@ -130,8 +133,31 @@ def _show(text: str) -> None:
     stdio_mod.stdout().write(stdio_mod.printable(text))
 
 
+def _verify_draft(draft: str, results: list) -> str:
+    """The draft with every Yesterday statement that no commit backs up
+    marked, and a one-line summary on stderr."""
+    commits = [c for _, payload in results for c in payload["commits"]]
+    marked, flagged = verify_mod.verify(draft, commits)
+    if flagged:
+        print(f"verify: {len(flagged)} statement(s) in Yesterday have no "
+              f"matching commit and are marked {verify_mod.MARK}; check them "
+              f"before you share the notes", file=sys.stderr)
+    else:
+        print("verify: every statement in Yesterday matches a commit (a "
+              "word-overlap check: it cannot tell a wrong detail from a "
+              "right one)", file=sys.stderr)
+    return marked
+
+
 def cmd_digest(args) -> int:
     results = [_repo_digest(args, root) for root in args.root]
+    if args.format == "csv":
+        rows = [(p["repo"], [gitlog_mod.Commit(
+                    c["sha"], c["author"], c["email"], c["date"], c["subject"],
+                    c["files"], c["pr"]) for c in p["commits"]])
+                for _, p in results]
+        stdio_mod.stdout().write(digest_mod.timesheet_csv(rows))
+        return 0
     if args.format == "json":
         payloads = [p for _, p in results]
         data = payloads[0] if len(payloads) == 1 else {"repos": payloads}
@@ -150,12 +176,14 @@ def cmd_digest(args) -> int:
                      if args.push_slack is not None else ""), file=sys.stderr)
             _show(md)
             return 2
+        if args.verify:
+            md = _verify_draft(md, results)
     if args.push_slack is not None:
         webhook = args.push_slack if args.push_slack is not True else \
-            os.environ.get("AUTOSTANDUP_SLACK_WEBHOOK", "")
+            config_mod.env("SLACK_WEBHOOK")
         if not webhook:
             print("error: no webhook — pass --push-slack <url> or set "
-                  "AUTOSTANDUP_SLACK_WEBHOOK", file=sys.stderr)
+                  "STANDUPGUY_SLACK_WEBHOOK", file=sys.stderr)
             return 2
         try:
             push_mod.push_slack(webhook, md)
@@ -198,7 +226,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "`mcp` and `serve` take it repeated too.")
     p.add_argument("--author", default=None,
                    help="Filter by author: case-insensitive substring of the "
-                        "author name or email (default: your git user.email).")
+                        "author name or email (default: your git user.email). "
+                        "The uncommitted-files section is shown only for "
+                        "you (--author equal to your git user.email or "
+                        "user.name) or with --all.")
     p.add_argument("--all", action="store_true",
                    help="Include all authors (default: your git user). Every "
                         "author, not every branch: the digest reads the "
@@ -222,14 +253,20 @@ def build_parser() -> argparse.ArgumentParser:
                         "'Carried over' section (WIP commits + uncommitted work).")
     p.add_argument("--draft", action="store_true",
                    help="Draft Yesterday/Today/Blockers prose via local model.")
-    p.add_argument("--format", choices=["markdown", "json"],
+    p.add_argument("--verify", action="store_true",
+                   help="With --draft: mark every statement under Yesterday "
+                        "that no commit in the digest backs up. A word-"
+                        "overlap check, not a proof; nothing is sent.")
+    p.add_argument("--format", choices=["markdown", "json", "csv"],
                    default="markdown",
-                   help="markdown (default) or json. json is the finished "
+                   help="markdown (default), json, or csv (a time sheet: "
+                        "one row per day and ticket id, an empty hours "
+                        "column for you). json and csv are the finished "
                         "output: not with --draft or --push-slack.")
     p.add_argument("--push-slack", nargs="?", const=True, default=None,
                    metavar="WEBHOOK_URL",
                    help="POST the notes to a Slack webhook; a bare "
-                        "--push-slack uses AUTOSTANDUP_SLACK_WEBHOOK. An "
+                        "--push-slack uses STANDUPGUY_SLACK_WEBHOOK. An "
                         "empty value is an error.")
     p.add_argument("--base-url", default=None)
     p.add_argument("--model", default=None)
@@ -308,7 +345,7 @@ def _check_values(args) -> bool:
     for flag, what, value in given:
         if isinstance(value, str) and not value.strip():
             way_out = ("a bare --push-slack posts to "
-                       "AUTOSTANDUP_SLACK_WEBHOOK" if flag == "--push-slack"
+                       "STANDUPGUY_SLACK_WEBHOOK" if flag == "--push-slack"
                        else "leave the option out to use the default")
             print(f"error: {flag} needs {what}, but the value is empty - is "
                   f"the variable it came from set? ({way_out})",
@@ -320,8 +357,13 @@ def _check_values(args) -> bool:
 def _check_output_flags(args) -> bool:
     """`--format json` prints the digest as JSON and stops; nothing reaches
     --draft or --push-slack. Say so (False, after printing why) instead of
-    quietly doing neither."""
-    if args.cmd is not None or args.format != "json":
+    quietly doing neither. `--verify` only means something after --draft."""
+    if args.cmd is None and args.verify and not args.draft:
+        print("error: --verify checks a draft, so it needs --draft (there "
+              "is nothing to verify in the plain digest: it is the commits)",
+              file=sys.stderr)
+        return False
+    if args.cmd is not None or args.format not in ("json", "csv"):
         return True
     named = [flag for flag, given in (("--draft", args.draft),
                                       ("--push-slack",
@@ -329,8 +371,8 @@ def _check_output_flags(args) -> bool:
              if given]
     if not named:
         return True
-    print(f"error: --format json cannot be combined with "
-          f"{' or '.join(named)}: the JSON is printed as it is, so nothing "
+    print(f"error: --format {args.format} cannot be combined with "
+          f"{' or '.join(named)}: it is printed as it is, so nothing "
           f"would be drafted or posted. Drop one or the other.",
           file=sys.stderr)
     return False

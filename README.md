@@ -2,6 +2,8 @@
 
 Kill the tracker trap without leaking data.
 
+**Limits:** It writes your standup from your own git history; it sees only commits it can read, and a draft made with a model is a draft you must read.
+
 Engineers lose up to 2/5 of the week to reporting busywork — duplicating
 updates across Jira, Slack, Confluence, and slide decks. AI note-takers are
 cloud SaaS with data-leak concerns. `standupguy` is the local-first
@@ -16,8 +18,11 @@ Zero dependencies — Python 3.10+ stdlib only. Needs `git` on your PATH
 (on Windows: [Git for Windows](https://git-scm.com/download/win)).
 
 ```bash
-pip install git+https://github.com/calasdan-sketch/standupguy
+pip install standupguy
 standupguy --version
+
+# or from source
+pip install git+https://github.com/calasdan-sketch/standupguy
 ```
 
 That installs the `standupguy` command (`py -m standupguy` / `python -m
@@ -34,10 +39,12 @@ standupguy --sprint --since 2026-10-01 --until 2026-10-14   # ...or an exact ran
 standupguy --since 2026-10-01       # custom range (--until optional, inclusive)
 standupguy --root ../api --root ../web   # several repos: one section per repo
 standupguy --draft                  # LLM prose: Yesterday / Today / Blockers
+standupguy --draft --verify         # ...and mark Yesterday statements no commit backs up
 standupguy --format json            # machine-readable digest
-standupguy --author "teammate@co"   # filter (default: your git user)
+standupguy --author "teammate@co"   # filter (default: your git user); no "In progress"
+                                    # section then: your working tree is not theirs
 standupguy --all                    # everyone
-standupguy --push-slack             # POST to AUTOSTANDUP_SLACK_WEBHOOK
+standupguy --push-slack             # POST to STANDUPGUY_SLACK_WEBHOOK
 standupguy mcp                      # MCP server on stdio
 standupguy serve                    # HTTP bridge for Activepieces / workflow tools (this computer only)
 standupguy serve --port 9000        # ...on another port (default 8765)
@@ -54,7 +61,7 @@ when `$HOOK` was never set) is an `error:` line and exit code 2, before git
 is run or anything is sent - never a quiet fall-back to the default. That
 covers `--root`, `--author`, `--since`, `--until`, `--push-slack`,
 `--base-url`, `--model` and `--host`. Leave the option out to get its
-default; a bare `--push-slack` posts to `AUTOSTANDUP_SLACK_WEBHOOK`. An
+default; a bare `--push-slack` posts to `STANDUPGUY_SLACK_WEBHOOK`. An
 empty environment variable counts as not set, and so does a blank value in
 a request to `serve` or in an argument of an `mcp` tool (`until=`).
 
@@ -187,7 +194,7 @@ standupguy serve --host 0.0.0.0 --root /path/to/repo
   stderr: the path only, never the query string.
 - It is plain HTTP: keep the port off the public internet.
 
-[`workflows/activepieces-standup-digest.json`](workflows/activepieces-standup-digest.json)
+[`workflows/activepieces-standup-digest.json`](https://github.com/calasdan-sketch/standupguy/blob/main/workflows/activepieces-standup-digest.json)
 is a documented flow definition (it's a human-readable spec, not a native
 export — build it in Activepieces by adding the steps in order; the file
 carries the exact config for each step and setup notes at the top):
@@ -214,6 +221,92 @@ _since 2026-10-14_
 ## Blockers
 _none reported — fill in yours_
 ```
+
+## Agent ledger
+
+When some of the commits in a digest carry a `Co-Authored-By:` line that
+names Claude (Claude Code adds `Co-Authored-By: Claude <noreply@anthropic.com>`
+to the commits it makes), the digest ends its commit list with a count:
+
+```markdown
+## Agent ledger
+- 2 of 3 commits (67%) credit Claude as a co-author
+- Claude Opus 4.5: 1, Claude Sonnet 5.5: 1
+_Counted from `Co-Authored-By:` lines in the commit messages: it shows what the commits say, not how the code was written._
+```
+
+It is a plain count of what the commit messages say, so it is the same every
+time you run it. A commit made with an agent that adds no such line is not
+counted, and anyone can type the line by hand. A line counts when its name or
+address contains `claude` or ends in `@anthropic.com`. The block is left out
+when no commit credits Claude; `--format json` always has an `agent_ledger`
+object (`commits`, `with_agent`, `agents`; `null` if git could not be
+asked). It also appears in the weekly and sprint digests and in `serve`.
+
+## Checking a draft (`--verify`)
+
+`--draft` asks a model to write Yesterday / Today / Blockers from the digest,
+and a model can state something that never happened. With `--verify` every
+statement under **Yesterday** that no commit backs up is marked, in the text
+that is printed or posted:
+
+```
+Yesterday:
+- Added the billing export.
+- Rewrote the payment gateway in Rust.  [unverified: no matching commit]
+```
+
+A statement is backed up when it names a commit (a sha of 7+ characters, or a
+pull request number such as `#42`) that exists in the digest, or shares at
+least one meaningful word with a commit: its subject, or the name of a file
+or folder it touched. A sha or PR number that no commit has is flagged
+whatever else the sentence says. This is a **word-overlap check**: it catches
+an invented topic; it does not catch a wrong detail about a real topic
+("fixed the login bug" passes if some commit mentions login), and a true
+statement that shares none of a commit's words is flagged anyway. Today and
+Blockers are plans and are not checked. `--verify` needs `--draft`. A summary
+goes to stderr; the exit code does not change. Nothing extra is sent anywhere.
+
+## Claude Code plugin (`/standupguy:standup`)
+
+This repository is also a Claude Code plugin marketplace. Install the
+`standupguy` command first (`pip install standupguy`), then in Claude Code:
+
+```
+/plugin marketplace add calasdan-sketch/standupguy
+/plugin install standupguy@standupguy
+```
+
+(or `claude plugin marketplace add calasdan-sketch/standupguy` and `claude
+plugin install standupguy@standupguy` in a shell). The plugin adds one skill.
+Plugin skills are namespaced, so you run it as `/standupguy:standup`; Claude
+may also use it when you ask for a standup. It runs `standupguy --format json`
+(pre-approved for that command only), reads the result and writes Yesterday /
+Today / Blockers using only what the commits say. Arguments go to the
+command: `/standupguy:standup --week`, `/standupguy:standup --all`.
+
+Note what this changes about "your history never leaves your laptop": the
+skill hands the digest to Claude, so it goes to the model provider your Claude
+Code uses. The deterministic digest, `--draft` with a local model and `serve`
+are unchanged. The layout (`.claude-plugin/marketplace.json`,
+`plugins/standupguy/.claude-plugin/plugin.json`,
+`plugins/standupguy/skills/standup/SKILL.md`) follows
+https://code.claude.com/docs/en/plugin-marketplaces and passed
+`claude plugin validate` and a local `claude plugin install` (Claude Code
+2.1.310); the skill itself has not been run in a live session here.
+
+## A daily digest in GitHub Actions
+
+[`examples/standup-digest.yml`](examples/standup-digest.yml) is a ready-made
+workflow: copy it to `.github/workflows/standup-digest.yml`. On weekdays at
+08:17 UTC (and by hand, for yesterday or the week) it installs a pinned
+`standupguy`, builds the digest of every author's commits (a runner has no
+"you") and writes it to the run's summary page. It asks for read access to
+the repository only and needs no secret. To also post it to Slack, add a
+repository secret `STANDUPGUY_SLACK_WEBHOOK`; without it that step prints a
+line and does nothing. The steps were run locally against a cloned repository
+with a stand-in for the runner's environment; the workflow itself has not run
+on GitHub.
 
 ## How it works
 
@@ -249,12 +342,20 @@ _none reported — fill in yours_
   (Ollama defaults shown):
 
 ```bash
-export AUTOSTANDUP_BASE_URL="http://localhost:11434/v1"
-export AUTOSTANDUP_MODEL="llama3.1"
+export STANDUPGUY_BASE_URL="http://localhost:11434/v1"
+export STANDUPGUY_MODEL="llama3.1"
 # freellmapi works too — it's OpenAI-compatible:
-export AUTOSTANDUP_BASE_URL="https://api.freellmapi.com/v1"
-export AUTOSTANDUP_API_KEY="<your key>"
+export STANDUPGUY_BASE_URL="https://api.freellmapi.com/v1"
+export STANDUPGUY_API_KEY="<your key>"
 ```
+
+The older `AUTOSTANDUP_BASE_URL`, `AUTOSTANDUP_MODEL`, `AUTOSTANDUP_API_KEY`
+and `AUTOSTANDUP_SLACK_WEBHOOK` still work: `STANDUPGUY_*` is read first,
+the old name is the fallback. If the model URL is plain `http://` and not
+this computer (and you set an API key), `--draft` warns on stderr that the
+key travels unencrypted. "This computer" means the name `localhost`, an IP
+address that is a loopback address (`127.x.x.x`, `::1`) or `0.0.0.0`; a
+name that merely starts with `127.` or `localhost` is not.
 
 - **Multi-repo (`--root A --root B`):** one section per repo, in the
   order given, in every mode; `--format json` then returns
@@ -289,7 +390,7 @@ export AUTOSTANDUP_API_KEY="<your key>"
   configured ones) comes back as an `isError` result. The server keeps
   running after either, and notifications are never answered.
 - **Push:** `--push-slack` POSTs the Markdown to a Slack incoming webhook
-  (URL from the flag or `AUTOSTANDUP_SLACK_WEBHOOK`). Commit-derived text
+  (URL from the flag or `STANDUPGUY_SLACK_WEBHOOK`). Commit-derived text
   is sanitized before posting: control characters stripped, lines
   truncated at 500 chars, `@channel`/`@here`/`@everyone` (and the
   `<!channel>` markup form) rewritten as `[at]channel`-style text, and
@@ -308,6 +409,32 @@ export AUTOSTANDUP_API_KEY="<your key>"
   refused before anything is sent. The API key, the login (`user:password@`)
   and query string of the model URL, and the Slack webhook URL are never
   shown in an error message.
+
+## Threat model, tickets and the time sheet
+
+**A repository is untrusted input.** standupguy runs `git log`, `status` and
+`config` in the folders you point it at. A repository you cloned can carry a
+`.git/config` that names a program for `core.fsmonitor` (run by `git status`)
+or a hooks folder. Every git call here therefore passes `-c
+core.fsmonitor=false -c core.hooksPath=<null device>` and sets
+`GIT_OPTIONAL_LOCKS=0` (no optional lock files written into the repository).
+That closes those two routes; it is not a sandbox: git itself, your global git
+configuration and the commit text still come from outside. The `serve` bridge
+answers at most 4 digests at once (others wait up to 30 s, then get 503) and
+reuses an identical request for 5 seconds, so a commit made a moment ago can
+take that long to appear. A model reply is read up to 4 MB.
+
+**Tickets.** Commit subjects naming `ABC-123` (Jira or Linear style) are rolled
+up in a `## Tickets` block and in the JSON as `tickets`. Look-alikes such as
+`UTF-8`, `SHA-256` or `ISO-8601` are ignored.
+
+**Time sheet.** `--format csv` prints `date,repo,ticket,commits,summary,hours`,
+one row per day and ticket (commits without a ticket have an empty ticket
+cell). `hours` is empty: git cannot know it. Cells that start with `=`, `+`,
+`-` or `@` get a leading `'` so a spreadsheet does not run them as formulas.
+
+The older `AUTOSTANDUP_*` variable names are kept: the README documents them
+and existing setups use them.
 
 ## Date handling
 
@@ -375,7 +502,7 @@ today is today's work.
 
 ## Windows
 
-Works on Windows 11 / Python 3.11: git output is decoded as UTF-8 (paths
+Written for Windows (developed on Linux; what is proven is what this repo's CI matrix runs: Ubuntu, Windows and macOS on Python 3.10, 3.12 and 3.14): git output is decoded as UTF-8 (paths
 and authors come back raw, never `caf\303\251.py`), non-ASCII commit
 subjects (or the 🌱) print on a cp1252 console without
 `UnicodeEncodeError` — unencodable characters are replaced — and the MCP
@@ -418,6 +545,10 @@ or later) already installed - they work offline and download nothing.
 
 ## Limitations
 
+- **0.2.0 was run on Linux only** (Python 3.10, 3.13 and 3.14 and the unpacked
+  source archive), not on Windows or macOS, not in a live Claude Code session,
+  and the Actions example not on GitHub.
+
 - **Dates.** Weekday names (`last monday`), `N months ago` and `N years ago`
   are worked out by git, not by `standupguy`; *Date handling* says what
   that can get wrong around a clock change. A bare weekday (`monday`) means
@@ -426,10 +557,6 @@ or later) already installed - they work offline and download nothing.
   specific to Windows (a closed pipe that is not a `BrokenPipeError`, the
   cp1252 console, UTF-8 on the MCP wire) is covered by Linux stand-ins, not
   by a run on Windows.
-- **Line endings.** The repository's text files are committed with Windows
-  (CRLF) line endings and there is no `.gitattributes`: keep them when you
-  edit a file. On Linux and macOS `git diff` flags them as trailing
-  whitespace.
 
 ## License
 

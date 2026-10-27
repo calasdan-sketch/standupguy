@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import io
 import json
+from . import __version__
+from . import _depth as depth_mod
 import os
 import sys
 
@@ -27,7 +29,7 @@ from . import digest as digest_mod
 from . import gitlog as gitlog_mod
 from . import stdio as stdio_mod
 
-SERVER_INFO = {"name": "standupguy", "version": "0.1.3"}
+SERVER_INFO = {"name": "standupguy", "version": __version__}
 
 TOOL_NAME = "what_did_i_ship"
 
@@ -232,7 +234,7 @@ def serve(roots=None, stdin=None, stdout=None) -> int:
         if not line:
             continue
         try:
-            request = json.loads(line)
+            request = depth_mod.loads(line)
         except (ValueError, RecursionError):   # RecursionError: "[[[[..."
             response = _error(None, PARSE_ERROR, "Parse error")
         else:
