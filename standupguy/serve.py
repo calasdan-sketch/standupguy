@@ -7,9 +7,10 @@ n8n at http://localhost:8765/digest.
 Endpoints:
   GET /health                       -> {"ok": true}
   GET /digest?since=&until=&author=&all=&format= -> standup digest (json|markdown)
+                                    (since defaults to "last workday")
   GET /week?since=&until=&author=&all=&format=   -> weekly summary (json|markdown)
 
-Defaults match the CLI: since=yesterday (week: 7 days ago), author = the
+Defaults match the CLI: since=last workday (week: 7 days ago), author = the
 repo's git user.email (all=1 for everyone), format=json. The JSON has the
 same `commits` shape as `standupguy --format json`, plus `markdown` (raw)
 and `slack_text` (sanitized + escaped for posting to Slack).
@@ -313,7 +314,8 @@ def _payload(roots: list, query: dict, weekly: bool) -> tuple[int, str, str]:
         since = query.get("since", ["7 days ago"])[0] or "7 days ago"
         label = "week"
     else:
-        since = query.get("since", ["yesterday"])[0] or "yesterday"
+        since = (query.get("since", [""])[0]
+                 or gitlog_mod.LAST_WORKDAY)
         label = f"{since} → {until}" if until else f"since {since}"
     for value in (since, until):
         if value:

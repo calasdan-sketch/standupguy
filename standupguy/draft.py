@@ -186,9 +186,37 @@ def _snippet(raw: bytes, limit: int = 80) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+def build_prompt(digest_md: str) -> str:
+    """The exact text --draft sends to the model for `digest_md`.
+
+    The digest is made of commit subjects, names and file names anyone can
+    write. Before it goes into the prompt its control characters, bidi
+    controls, zero-width and tag characters are made visible (see
+    stdio.printable): text a person cannot see in the digest - an
+    instruction spelled in invisible tag characters, say - cannot reach the
+    model unseen either. Then it is capped at MAX_DIGEST_CHARS."""
+    digest_md = _cap_digest(stdio_mod.printable(digest_md))
+    return DRAFT_TEMPLATE.format(digest=digest_md)
+
+
+def dry_run(digest_md: str, *, base_url=None, model=None) -> str:
+    """What --draft --dry-run prints: where the request would go, which
+    model, and the prompt itself. Nothing is sent, and the API key is never
+    shown (only whether one is set)."""
+    cfg = _cfg(base_url, None, model)
+    key = "set" if os.environ.get("AUTOSTANDUP_API_KEY") else \
+        "not set (sends the placeholder 'ollama')"
+    prompt = build_prompt(digest_md)
+    return (f"# dry run: nothing was sent\n"
+            f"# endpoint: {_shown_url(cfg['base_url'])}/chat/completions\n"
+            f"# model: {stdio_mod.printable(cfg['model'])}\n"
+            f"# AUTOSTANDUP_API_KEY: {key}\n"
+            f"# prompt ({len(prompt)} characters):\n"
+            f"{prompt}")
+
+
 def draft(digest_md: str, *, base_url=None, api_key=None, model=None,
           timeout: int = 120) -> str:
-    digest_md = _cap_digest(digest_md)
     cfg = _cfg(base_url, api_key, model)
     shown = _shown_url(cfg["base_url"])
     problem = _key_problem(cfg["api_key"])
@@ -199,7 +227,7 @@ def draft(digest_md: str, *, base_url=None, api_key=None, model=None,
     body = json.dumps({
         "model": cfg["model"],
         "messages": [{"role": "user",
-                      "content": DRAFT_TEMPLATE.format(digest=digest_md)}],
+                      "content": build_prompt(digest_md)}],
         "temperature": 0.3,
     }).encode()
     try:

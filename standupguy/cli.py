@@ -5,7 +5,7 @@ and sprint-review bullets as Markdown. Deterministic digest works fully
 offline; --draft uses YOUR local model endpoint (Ollama/freellmapi).
 Your history never touches a cloud SaaS.
 
-  standupguy                  # yesterday's digest
+  standupguy                  # since the last workday (Friday, on a Monday)
   standupguy --week           # last 7 days
   standupguy --draft          # LLM prose: Yesterday / Today / Blockers
   standupguy --sprint [DAYS]  # sprint-review bullets, grouped by day,
@@ -31,7 +31,7 @@ from . import push as push_mod
 from . import serve as serve_mod
 from . import stdio as stdio_mod
 
-VERSION = "0.1.3"
+VERSION = "0.2.0"
 
 
 def _harden_streams() -> None:
@@ -67,6 +67,10 @@ def _resolve_author(args, root: str) -> str | None:
     return email
 
 
+# English and fixed: strftime("%a") follows the locale
+_DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
 def _window(args) -> tuple[str, str | None, str]:
     """(since, until, label) for the requested mode."""
     # "was it given" is `is not None`: an empty value is not "not given"
@@ -80,7 +84,13 @@ def _window(args) -> tuple[str, str | None, str]:
     if args.week:
         since = args.since if given else "7 days ago"
         return since, args.until, "week"
-    since = args.since if given else "yesterday"
+    if not given:
+        since = gitlog_mod.LAST_WORKDAY
+        day = gitlog_mod.calendar_day(since)
+        return since, args.until, (
+            f"since {since} ({_DAY_NAMES[day.weekday()]} {day.isoformat()})"
+            + (f" → {args.until}" if args.until is not None else ""))
+    since = args.since
     label = f"{since} → {args.until}" if args.until is not None \
         else f"since {since}"
     return since, args.until, label
@@ -138,6 +148,8 @@ def cmd_digest(args) -> int:
         stdio_mod.stdout().write(json.dumps(data, indent=2) + "\n")
         return 0
     md = "\n".join(m for m, _ in results)
+    if args.dry_run:
+        return _dry_run(args, md)
     if args.draft:
         try:
             md = draft_mod.draft(
@@ -165,6 +177,24 @@ def cmd_digest(args) -> int:
             return 2
         return 0
     _show(md)
+    return 0
+
+
+def _dry_run(args, md: str) -> int:
+    """--dry-run: print what --draft would send and what --push-slack would
+    post, then stop. Nothing leaves this computer."""
+    out = []
+    if args.draft:
+        out.append(draft_mod.dry_run(md, base_url=args.base_url,
+                                     model=args.model))
+    if args.push_slack is not None:
+        if args.draft:
+            out.append("# --push-slack: the model's reply would be posted to "
+                       "Slack, sanitized the same way as below\n")
+        out.append("# dry run: this is what would be posted to Slack "
+                   "(nothing was sent)\n" + push_mod.sanitize_slack_text(md)
+                   + "\n")
+    _show("\n".join(out))
     return 0
 
 
@@ -204,11 +234,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "author, not every branch: the digest reads the "
                         "branch that is checked out.")
     p.add_argument("--since", default=None,
-                   help="git date: 'yesterday' (default), '2026-10-01', "
+                   help="git date: 'last workday' (default: Friday on a "
+                        "Monday, see --workdays), 'yesterday', '2026-10-01', "
                         "'3 days ago', 'last monday' (a bare 'monday' means "
                         "today to git) … Values without a time "
                         "of day mean midnight. today, yesterday, N days ago "
-                        "and N weeks ago are whole local calendar days; "
+                        "N weeks ago and last workday are whole local "
+                        "calendar days; "
                         "other words are passed to git as typed.")
     p.add_argument("--until", default=None,
                    help="End of the range (git date). A bare date is "
@@ -231,6 +263,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="POST the notes to a Slack webhook; a bare "
                         "--push-slack uses AUTOSTANDUP_SLACK_WEBHOOK. An "
                         "empty value is an error.")
+    p.add_argument("--workdays", default=None, metavar="DAYS",
+                   help="Your working days, for 'last workday' (the default "
+                        "--since): mon-fri (default), sun-thu, mon,wed,fri "
+                        "... Also read from STANDUPGUY_WORKDAYS.")
+    p.add_argument("--dry-run", action="store_true",
+                   help="With --draft and/or --push-slack: print the exact "
+                        "prompt and endpoint, and the exact Slack text, "
+                        "instead of sending anything.")
     p.add_argument("--base-url", default=None)
     p.add_argument("--model", default=None)
     p.add_argument("cmd", nargs="?", choices=["mcp", "serve"],
@@ -293,6 +333,7 @@ _TEXT_OPTIONS = (
     ("--base-url", "base_url", "a model endpoint URL"),
     ("--model", "model", "a model name"),
     ("--host", "host", "a bind address"),
+    ("--workdays", "workdays", "working days such as mon-fri"),
 )
 
 
@@ -336,6 +377,39 @@ def _check_output_flags(args) -> bool:
     return False
 
 
+def _check_workdays(args) -> bool:
+    """--workdays (else STANDUPGUY_WORKDAYS) must name working days. A bad
+    value is an error (False, after saying why), not a quiet Monday-to-
+    Friday: the digest would start on the wrong day without a word."""
+    spec, source = args.workdays, "--workdays"
+    if spec is None:
+        spec, source = os.environ.get("STANDUPGUY_WORKDAYS") or None, \
+            "STANDUPGUY_WORKDAYS"
+    if spec is None:
+        gitlog_mod.set_workdays(gitlog_mod.DEFAULT_WORKDAYS)
+        return True
+    try:
+        gitlog_mod.set_workdays(gitlog_mod.parse_workdays(spec))
+    except ValueError as e:
+        print(stdio_mod.printable(
+            f"error: {source} {e} (expected e.g. mon-fri, sun-thu or "
+            f"mon,wed,fri)"), file=sys.stderr)
+        return False
+    return True
+
+
+def _check_dry_run(args) -> bool:
+    """--dry-run shows what --draft or --push-slack would send. Alone (or
+    with `mcp` / `serve`) it would change nothing: say so (False)."""
+    if not args.dry_run or (args.cmd is None and (
+            args.draft or args.push_slack is not None)):
+        return True
+    print("error: --dry-run only changes --draft and --push-slack (it shows "
+          "what they would send); the digest itself sends nothing anyway",
+          file=sys.stderr)
+    return False
+
+
 def main(argv=None) -> int:
     try:
         try:
@@ -363,7 +437,8 @@ def _main(argv=None) -> int:
     if not _check_values(args):
         return 2
     args.root = args.root or [os.getcwd()]
-    if not _check_output_flags(args):
+    if not _check_output_flags(args) or not _check_dry_run(args) \
+            or not _check_workdays(args):
         return 2
     try:
         if not _check_roots(args.root):     # mcp, serve and the digest alike

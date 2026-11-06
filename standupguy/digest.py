@@ -61,7 +61,8 @@ def group_commits(commits: list[gitlog_mod.Commit]
 
 def _commit_line(c: gitlog_mod.Commit) -> str:
     _, clean = classify(c.subject)
-    files = f" ({len(c.files)} files)" if c.files else ""
+    n = len(c.files)
+    files = f" ({n} file{'' if n == 1 else 's'})" if n else ""
     pr = f" [PR #{c.pr_number}]" if c.pr_number else ""
     return f"- {clean}{pr}{files} `{c.sha[:7]}`"
 
@@ -80,10 +81,12 @@ def _collect(root: str, since: str, author: str | None, until: str | None,
 
 def commit_dict(c: gitlog_mod.Commit) -> dict:
     """The one JSON shape for a commit, shared by the CLI and the HTTP
-    bridge (`sha, author, email, date, subject, files, pr, wip`)."""
+    bridge (`sha, author, email, date, subject, files, pr, wip,
+    coauthors`)."""
     return {"sha": c.sha, "author": c.author, "email": c.email,
             "date": c.date, "subject": c.subject, "files": c.files,
-            "pr": c.pr_number, "wip": is_wip(c.subject)}
+            "pr": c.pr_number, "wip": is_wip(c.subject),
+            "coauthors": list(c.coauthors)}
 
 
 def to_json(root: str, label: str, since: str, until: str | None,

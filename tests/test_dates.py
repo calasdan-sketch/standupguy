@@ -267,9 +267,22 @@ class TestWholeCalendarDays(unittest.TestCase):
                              ["early bird nov 1", "sunday nov 1"])
 
     def test_the_command_line_default_window(self):
+        # 0.2.0: the default is "last workday" - on this Monday, Friday the
+        # 6th - so the weekend is in it, and the clock change does not move it
         with it_is("2026-03-09T00:10:00-05:00"):
             code, out, err = run_cli("--root", self.repo, "--all", "--until",
                                      "yesterday", "--format", "json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            sorted(c["subject"] for c in json.loads(out)["commits"]),
+            ["saturday mar 7", "sunday mar 8"])
+        self.assertTrue(json.loads(out)["label"].startswith(
+            "since last workday (Fri 2026-03-06)"))
+        # an explicit "yesterday" still means only Sunday
+        with it_is("2026-03-09T00:10:00-05:00"):
+            code, out, err = run_cli("--root", self.repo, "--all", "--since",
+                                     "yesterday", "--until", "yesterday",
+                                     "--format", "json")
         self.assertEqual(code, 0, err)
         self.assertEqual([c["subject"] for c in json.loads(out)["commits"]],
                          ["sunday mar 8"])
