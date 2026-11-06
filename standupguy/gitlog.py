@@ -391,21 +391,41 @@ def _fold(s: str) -> str:
     return unicodedata.normalize("NFKC", s or "").casefold().strip()
 
 
+# A whole e-mail address: something@domain.tld, no spaces or angle brackets.
+_EMAIL_RE = re.compile(r"[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+")
+
+
+def _address(coauthor: str) -> str:
+    """The e-mail address of a "Name <email>" trailer value (the last <...>),
+    or the whole value when it has none."""
+    m = re.search(r"<([^<>]*)>\s*$", coauthor)
+    return m.group(1) if m else coauthor
+
+
 def author_matches(commit: Commit, needle: str | None) -> bool:
     """Does `needle` select this commit's author?
 
-    Like `git log --author` but predictable: a case-insensitive substring
-    of the author NAME, the author EMAIL, or the combined "Name <email>"
-    form — never a regex (so 'dan+work@x.com' or 'J. Doe [bot]' match
-    literally and can't make git fail), never case-sensitive, and
-    whitespace around the needle is ignored. An empty needle matches
-    everyone. A co-author (a ``Co-authored-by: Name <email>`` trailer, the
-    form GitHub and GitLab write for pair work) matches the same way: work
-    you paired on is your work too.
+    Like `git log --author` but predictable, never a regex (so
+    'dan+work@x.com' or 'J. Doe [bot]' match literally and can't make git
+    fail), never case-sensitive, and whitespace around the needle is
+    ignored. An empty needle matches everyone.
+
+    - A whole e-mail address (``dan@example.com``, the default from
+      ``git config user.email``) matches that address EXACTLY: the author's,
+      or the address of a ``Co-authored-by: Name <email>`` trailer. A
+      substring would also find ``jordan@example.com``.
+    - Anything else (``calas``, ``teammate@co``, ``"Dan <dan@x.com>"``) is a
+      case-insensitive substring of the author NAME, the author EMAIL, the
+      combined "Name <email>" form, or a co-author trailer.
+
+    Co-authors count because work you paired on is your work too.
     """
     n = _fold(needle or "")
     if not n:
         return True
+    if _EMAIL_RE.fullmatch(n):
+        return n == _fold(commit.email) or any(
+            n == _fold(_address(c)) for c in commit.coauthors)
     name, email = _fold(commit.author), _fold(commit.email)
     if n in name or n in email or n in f"{name} <{email}>":
         return True

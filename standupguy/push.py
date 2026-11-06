@@ -56,7 +56,11 @@ def sanitize_slack_text(text: str) -> str:
       Escaped, a commit subject can only ever render as literal text.
     """
     clean_lines = []
-    for line in text.splitlines():
+    # split on "\n" only: str.splitlines() also breaks at \x0b, \x0c,
+    # \x1c-\x1e, \x85, U+2028 and U+2029, so a file name holding one of them
+    # would start a line of its own in the channel. Here they are stripped
+    # (control characters) or shown as escapes (the two separators).
+    for line in text.split("\n"):
         line = "".join(
             ch for ch in line
             if ch == "\t" or unicodedata.category(ch) != "Cc"

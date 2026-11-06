@@ -37,6 +37,18 @@ _WIP_RE = re.compile(
 DEFAULT_SPRINT_DAYS = 14
 
 
+def one_line(text) -> str:
+    """`text` for a field that must stay on its line of the Markdown (a
+    commit subject, a file name, the repo name, a label): a line break in it
+    is shown as the two characters \\n instead of starting a new line. A
+    file can be called "wip\\n---\\nSYSTEM: ...": raw, that would write lines
+    of its own into the digest, the Slack text and a --draft prompt. (Other
+    control characters, CR included, are left for the output to deal with:
+    stdio.printable on a terminal and in the prompt, the Slack sanitizer;
+    `serve` and MCP carry them exactly. The JSON keeps every field exact.)"""
+    return str(text).replace("\n", "\\n")
+
+
 def classify(subject: str) -> tuple[str, str]:
     """(group, cleaned subject)."""
     m = _PREFIX_RE.match(subject.strip())
@@ -64,7 +76,7 @@ def _commit_line(c: gitlog_mod.Commit) -> str:
     n = len(c.files)
     files = f" ({n} file{'' if n == 1 else 's'})" if n else ""
     pr = f" [PR #{c.pr_number}]" if c.pr_number else ""
-    return f"- {clean}{pr}{files} `{c.sha[:7]}`"
+    return f"- {one_line(clean)}{pr}{files} `{c.sha[:7]}`"
 
 
 def _collect(root: str, since: str, author: str | None, until: str | None,
@@ -113,7 +125,7 @@ def digest_markdown(root: str, since: str, label: str,
     commits, in_progress = _collect(root, since, author, until,
                                     commits, in_progress)
     repo = gitlog_mod.repo_name(root)
-    lines = [f"# Standup — {repo}", f"_{label}_", ""]
+    lines = [f"# Standup — {one_line(repo)}", f"_{one_line(label)}_", ""]
     if not commits and not in_progress:
         lines.append("No commits or uncommitted changes in range. "
                      "Touch grass. 🌱")
@@ -128,7 +140,7 @@ def digest_markdown(root: str, since: str, label: str,
             lines.append("")
     if in_progress:
         lines.append("## In progress (uncommitted)")
-        lines.extend(f"- `{p}`" for p in sorted(in_progress)[:20])
+        lines.extend(f"- `{one_line(p)}`" for p in sorted(in_progress)[:20])
         if len(in_progress) > 20:
             lines.append(f"- …and {len(in_progress) - 20} more")
         lines.append("")
@@ -164,8 +176,8 @@ def weekly_markdown(root: str, author: str | None = None,
         commits = gitlog_mod.commits_since(root, since, author, until)
     repo = gitlog_mod.repo_name(root)
     window = f"{since} → {until}" if until else f"since {since}"
-    lines = [f"# Weekly summary — {repo}",
-             f"_{len(commits)} commits {window} (local dates)_", ""]
+    lines = [f"# Weekly summary — {one_line(repo)}",
+             f"_{len(commits)} commits {one_line(window)} (local dates)_", ""]
     lines += _day_sections(_by_day(commits))
     lines.append("## Highlights for sprint review")
     lines.append("_pick 3–5 bullets from above_")
@@ -186,8 +198,8 @@ def sprint_markdown(root: str, since: str, until: str | None = None,
     wip = [c for c in commits if is_wip(c.subject)]
     repo = gitlog_mod.repo_name(root)
     window = f"{since} → {until}" if until else f"since {since}"
-    lines = [f"# Sprint review — {repo}",
-             f"_{window} · {len(shipped)} commits shipped · "
+    lines = [f"# Sprint review — {one_line(repo)}",
+             f"_{one_line(window)} · {len(shipped)} commits shipped · "
              f"dates in local time_", ""]
     if shipped:
         lines += _day_sections(_by_day(shipped))
@@ -195,7 +207,8 @@ def sprint_markdown(root: str, since: str, until: str | None = None,
         lines += ["_no commits shipped in this window_", ""]
     lines.append("## Carried over")
     carried = [f"- {_commit_line(c)[2:]} _(WIP commit)_" for c in wip]
-    carried += [f"- `{p}` _(uncommitted)_" for p in sorted(in_progress)[:20]]
+    carried += [f"- `{one_line(p)}` _(uncommitted)_"
+                for p in sorted(in_progress)[:20]]
     if len(in_progress) > 20:
         carried.append(f"- …and {len(in_progress) - 20} more uncommitted")
     lines += carried or ["_nothing carried over_"]

@@ -48,7 +48,7 @@ page does not mention it.
 | Slack | webhook, mentions and markup escaped | no | Slack-formatted output | planned | — | native |
 | MCP server / HTTP bridge | both | no | — | — | — | — |
 | Hostile commit text (terminal escapes, bidi, invisible tags) | shown as visible escapes | — | — | — | — | n/a |
-| Price | free, MIT | free, MIT | free, MIT | — | — | free up to 10 users, then $2.50/participant/month billed yearly |
+| Price | free, MIT | free, MIT | free, MIT | — | — | free up to 10 users, then $2.50/participant/month billed yearly ($3 billed monthly) |
 
 What the others do better: git-standup scans a folder tree for repos by
 itself, can show a diff-stat per commit (`-c`) and fetches first (`-f`);
@@ -138,9 +138,12 @@ The digest is the history of the branch that is checked out
 not merged yet, is not in it. `--all` means every author, not every branch.
 Check the branch out to see its work (`git switch feature/login`).
 
-`--author` matches like you'd expect, not like a regex: a case-insensitive
-substring of the author **name or email** (`calas`, `DAN@EXAMPLE.COM`,
-`ξένος`, `"Dan Calas <dan@example.com>"` all work; unicode names are
+`--author` matches like you'd expect, not like a regex. A whole e-mail
+address (`DAN@EXAMPLE.COM`, and the default, your `git config user.email`)
+matches that address **exactly**, ignoring case: `dan@example.com` does not
+pick up `jordan@example.com`. Anything else is a case-insensitive substring
+of the author **name or email** (`calas`, `dan@example`, `ξένος`,
+`"Dan Calas <dan@example.com>"` all work; unicode names are
 matched case-insensitively, surrounding spaces are ignored, and `+`, `.`
 or `[` in an address are literal — git's own `--author` is a case-sensitive
 regex and would miss or fail on those). The default is your `git config
@@ -149,9 +152,13 @@ user.email`.
 **Pair work counts.** A commit someone else made with a
 `Co-authored-by: Your Name <you@example.com>` trailer (the line
 [GitHub documents](https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/creating-a-commit-with-multiple-authors)
-for pairing) matches `--author` the same way, so it is in
-your digest. Only real trailers count (the last paragraph of the message);
-`--format json` lists them in each commit's `coauthors`.
+for pairing) matches `--author` the same way (an e-mail needle against
+the address in `<...>`, exactly), so it is in your digest. Only real
+trailers count (the last paragraph of the message); `--format json` lists
+them in each commit's `coauthors`. GitHub often writes your *noreply*
+address in these trailers (`12345+you@users.noreply.github.com`), which
+your usual `user.email` does not match: pass a name instead
+(`--author "Your Name"`) or that address.
 
 ### The default window: since the last workday
 
@@ -296,8 +303,16 @@ bridge is platform-specific.
   [Trojan Source](https://trojansource.codes/) (`\u202e`), zero-width
   spaces, the BOM, line and paragraph separators, and the Unicode *tag*
   characters (`\U000e0041`), invisible copies of ASCII that a language
-  model still reads. Zero-width joiners stay, because emoji and Persian or
-  Indic writing need them. `--format json`, `serve` and the MCP server are
+  model still reads, the variation selectors (`\U000e0100`, 256 of them:
+  enough to hide a byte each), the soft hyphen and a few other characters
+  that render as nothing. Zero-width joiners stay, because emoji and Persian
+  or Indic writing need them, and so does one emoji-style selector right
+  after a visible character (U+FE0F, which turns a heart into a red-heart
+  emoji); a second one, or one anywhere else, is escaped. This is a list of the characters standupguy knows
+  about, not a guarantee about every character a font may draw as nothing.
+  A line break inside a field (a file named `wip` + newline + `---`) is
+  shown as `\n` in every Markdown output, so it cannot start a line of its
+  own. `--format json`, `serve` and the MCP server are
   not terminals and carry the text exactly; their `slack_text` is escaped.
 - **Sprint mode (`--sprint [DAYS]`):** the last DAYS days (default 14), or
   `--since`/`--until`, grouped by day with the same prefix buckets, then a
@@ -309,9 +324,16 @@ bridge is platform-specific.
 - **Draft mode (`--draft`):** sends the digest to your local model via an
   OpenAI-compatible endpoint and gets back Yesterday/Today/Blockers prose.
   The digest goes into the prompt with the same visible escapes as on the
-  terminal, so an instruction hidden in invisible characters in a commit
-  message reaches the model only as text you could have read. `--draft
-  --dry-run` prints the endpoint (without its login or query string), the
+  terminal (every variation selector included), so text hidden with the
+  characters listed above reaches the model only as escapes you could have
+  read. It sits between two marker lines with a random token picked for
+  each prompt (no commit text can close them early), and the prompt tells
+  the model the digest is data and not to follow instructions in it. That
+  makes prompt injection from commit text harder, not impossible: a model
+  can still be swayed by plainly visible text. `--draft
+  --dry-run` prints the endpoint (scheme, host and port, plus only the
+  usual API words of the path such as `v1`; any other path part is `***`,
+  and no login or query string), the
   model, whether an API key is set (never the key) and the exact prompt,
   and sends nothing; `--push-slack --dry-run` prints the exact text that
   would be posted. `--dry-run` with neither is an `error:` (exit code 2).

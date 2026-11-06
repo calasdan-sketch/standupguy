@@ -383,8 +383,11 @@ def _check_workdays(args) -> bool:
     Friday: the digest would start on the wrong day without a word."""
     spec, source = args.workdays, "--workdays"
     if spec is None:
-        spec, source = os.environ.get("STANDUPGUY_WORKDAYS") or None, \
-            "STANDUPGUY_WORKDAYS"
+        # an empty or blank variable counts as not set, like every other
+        # variable standupguy reads (an empty --workdays is refused earlier,
+        # like every other empty option)
+        spec, source = (os.environ.get("STANDUPGUY_WORKDAYS") or "").strip() \
+            or None, "STANDUPGUY_WORKDAYS"
     if spec is None:
         gitlog_mod.set_workdays(gitlog_mod.DEFAULT_WORKDAYS)
         return True
