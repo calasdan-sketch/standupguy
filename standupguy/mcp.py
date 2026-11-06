@@ -27,7 +27,7 @@ from . import digest as digest_mod
 from . import gitlog as gitlog_mod
 from . import stdio as stdio_mod
 
-SERVER_INFO = {"name": "standupguy", "version": "0.1.3"}
+SERVER_INFO = {"name": "standupguy", "version": "0.2.0"}
 
 TOOL_NAME = "what_did_i_ship"
 
@@ -121,7 +121,7 @@ def _check_call(params) -> dict:
 
 
 def _call_tool(args: dict, roots: list[str]) -> dict:
-    since = args.get("since") or "yesterday"
+    since = args.get("since") or gitlog_mod.LAST_WORKDAY
     until = args.get("until") or None
     label = f"{since} → {until}" if until else f"since {since}"
     try:
@@ -180,7 +180,9 @@ def handle(request, roots) -> dict | None:
             "inputSchema": {"type": "object", "properties": {
                 "since": {"type": "string",
                           "description": "git date: 'yesterday', '7 days ago', "
-                                         "'2026-10-01' (default: yesterday)"},
+                                         "'2026-10-01', 'last workday' "
+                                         "(default: last workday - Friday "
+                                         "on a Monday)"},
                 "until": {"type": "string",
                           "description": "end of the range, inclusive for a "
                                          "bare date (default: now)"},

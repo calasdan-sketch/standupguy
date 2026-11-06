@@ -455,7 +455,7 @@ class TestTerminalEscapes(unittest.TestCase):
     def test_ordinary_commits_print_exactly_as_before(self):
         code, out, err = run_cli("--root", make_repo(), "--all", "--since",
                                  "2026-10-14")
-        self.assertIn("- add login flow (1 files) `", out)
+        self.assertIn("- add login flow (1 file) `", out)
         self.assertNotIn("\\x", out)
 
     def test_json_stays_exact(self):

@@ -20,6 +20,9 @@ class Commit:
     subject: str
     files: list[str]
     pr_number: int | None = None
+    # the people named in Co-authored-by: trailers ("Name <email>"), as
+    # written by whoever made the commit
+    coauthors: list[str] = dataclasses.field(default_factory=list)
 
 
 class GitNotFound(RuntimeError):
@@ -194,7 +197,7 @@ def check_date(value: str) -> str | None:
     quietly falls back to "now"), else None.
     """
     s = (value or "").strip()
-    if not s:
+    if not s or _CALENDAR_DAY_RE.match(s):
         return None
     m = _ISO_DATE_RE.match(s) or _COMPACT_DATE_RE.match(s)
     if m:
@@ -219,10 +222,81 @@ def check_date(value: str) -> str | None:
     return None
 
 
-# today, yesterday, N days ago, N weeks ago (git also takes "2.days.ago")
+# today, yesterday, N days ago, N weeks ago (git also takes "2.days.ago"),
+# and standupguy's own "last workday" (git has no such word)
 _CALENDAR_DAY_RE = re.compile(
-    r"^(?:(today)|(yesterday)|([0-9]{1,6})[\s.]+(day|week)s?[\s.]+ago)$",
+    r"^(?:(today)|(yesterday)|([0-9]{1,6})[\s.]+(day|week)s?[\s.]+ago"
+    r"|(last[\s.]+work(?:ing)?[\s.]*day))$",
     re.IGNORECASE)
+
+#: The value the daily digest starts from when no --since is given.
+LAST_WORKDAY = "last workday"
+
+#: Default working days, Monday=0 ... Sunday=6: Monday to Friday.
+DEFAULT_WORKDAYS = frozenset(range(5))
+
+# The working days "last workday" counts back over. Set once at start-up
+# (--workdays, STANDUPGUY_WORKDAYS) with set_workdays().
+_workdays = DEFAULT_WORKDAYS
+
+def _day_number(word: str) -> int:
+    """Monday=0 ... Sunday=6 for a weekday name of 3 letters or more."""
+    w = word.strip().lower()
+    for i in range(7):
+        full = _WEEKDAYS[(i + 1) % 7]      # _WEEKDAYS starts on Sunday
+        if len(w) >= 3 and full.startswith(w):
+            return i
+    raise ValueError(f"{word.strip()[:40]!r} is not a weekday")
+
+
+def parse_workdays(spec: str) -> frozenset:
+    """The working days `spec` names, Monday=0 ... Sunday=6.
+
+    `spec` is a comma-separated list of weekdays and ranges: "mon-fri" (the
+    default), "sun-thu", "mon,tue,thu", "fri-mon" (a range may wrap past
+    Sunday). Names are 3 letters or more, any case. Raises ValueError for
+    anything else - an empty list included: with no working day there is no
+    "last workday" to count back to."""
+    days: set[int] = set()
+    parts = [p for p in (spec or "").split(",")]
+    if not any(p.strip() for p in parts):
+        raise ValueError("needs at least one weekday, e.g. mon-fri")
+    for part in parts:
+        if not part.strip():
+            raise ValueError(f"{spec.strip()[:40]!r} has an empty item")
+        first, sep, last = part.partition("-")
+        start = _day_number(first)
+        if not sep:
+            days.add(start)
+            continue
+        end = _day_number(last)
+        i = start
+        days.add(i)
+        while i != end:
+            i = (i + 1) % 7
+            days.add(i)
+    return frozenset(days)
+
+
+def set_workdays(days) -> None:
+    """Make `days` (from parse_workdays) the working days "last workday"
+    counts back over."""
+    global _workdays
+    days = frozenset(days)
+    if not days or not days <= set(range(7)):
+        raise ValueError("needs at least one weekday, e.g. mon-fri")
+    _workdays = days
+
+
+def last_workday(today: datetime.date | None = None) -> datetime.date:
+    """The most recent working day BEFORE `today` (default: today): Friday
+    on a Monday, a Saturday or a Sunday; yesterday on Tuesday to Friday."""
+    today = today or _today()
+    for back in range(1, 8):
+        day = today - datetime.timedelta(days=back)
+        if day.weekday() in _workdays:
+            return day
+    raise AssertionError("no working day")     # set_workdays refuses that
 
 
 def _today() -> datetime.date:
@@ -243,6 +317,8 @@ def _calendar_day(value: str) -> datetime.date | None:
     if not m:
         return None
     today = _today()
+    if m.group(5):
+        return last_workday(today)
     try:
         if m.group(1):
             return today
@@ -252,6 +328,12 @@ def _calendar_day(value: str) -> datetime.date | None:
         return today - datetime.timedelta(days=days)
     except OverflowError:       # before year 1: leave it to git
         return None
+
+
+def calendar_day(value: str) -> datetime.date | None:
+    """The local day `value` stands for when standupguy works it out itself
+    (today, yesterday, N days/weeks ago, last workday), else None."""
+    return _calendar_day((value or "").strip())
 
 
 def _compact_day(value: str) -> datetime.date | None:
@@ -309,21 +391,45 @@ def _fold(s: str) -> str:
     return unicodedata.normalize("NFKC", s or "").casefold().strip()
 
 
+# A whole e-mail address: something@domain.tld, no spaces or angle brackets.
+_EMAIL_RE = re.compile(r"[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+")
+
+
+def _address(coauthor: str) -> str:
+    """The e-mail address of a "Name <email>" trailer value (the last <...>),
+    or the whole value when it has none."""
+    m = re.search(r"<([^<>]*)>\s*$", coauthor)
+    return m.group(1) if m else coauthor
+
+
 def author_matches(commit: Commit, needle: str | None) -> bool:
     """Does `needle` select this commit's author?
 
-    Like `git log --author` but predictable: a case-insensitive substring
-    of the author NAME, the author EMAIL, or the combined "Name <email>"
-    form — never a regex (so 'dan+work@x.com' or 'J. Doe [bot]' match
-    literally and can't make git fail), never case-sensitive, and
-    whitespace around the needle is ignored. An empty needle matches
-    everyone.
+    Like `git log --author` but predictable, never a regex (so
+    'dan+work@x.com' or 'J. Doe [bot]' match literally and can't make git
+    fail), never case-sensitive, and whitespace around the needle is
+    ignored. An empty needle matches everyone.
+
+    - A whole e-mail address (``dan@example.com``, the default from
+      ``git config user.email``) matches that address EXACTLY: the author's,
+      or the address of a ``Co-authored-by: Name <email>`` trailer. A
+      substring would also find ``jordan@example.com``.
+    - Anything else (``calas``, ``teammate@co``, ``"Dan <dan@x.com>"``) is a
+      case-insensitive substring of the author NAME, the author EMAIL, the
+      combined "Name <email>" form, or a co-author trailer.
+
+    Co-authors count because work you paired on is your work too.
     """
     n = _fold(needle or "")
     if not n:
         return True
+    if _EMAIL_RE.fullmatch(n):
+        return n == _fold(commit.email) or any(
+            n == _fold(_address(c)) for c in commit.coauthors)
     name, email = _fold(commit.author), _fold(commit.email)
-    return n in name or n in email or n in f"{name} <{email}>"
+    if n in name or n in email or n in f"{name} <{email}>":
+        return True
+    return any(n in _fold(c) for c in commit.coauthors)
 
 
 # One record per commit: RS (0x1e) + sha US (0x1f) name US email US date US
@@ -342,9 +448,29 @@ def author_matches(commit: Commit, needle: str | None) -> bool:
 # so a commit is never labelled with a day outside the window that found it.
 # (The author date, %ad, survives a rebase, an amend or a cherry-pick; the
 # committer date does not.)
+#
+# A sixth field holds the Co-authored-by: trailers, valueonly and unfolded,
+# separated by GS (0x1d) + the token. (A git whose %(trailers) does not
+# know these options prints the placeholder as it is; parse_log ignores it.)
 def _log_format(token: str = "") -> str:
-    rs, us = "%x1e" + token, "%x1f" + token
-    return f"--pretty=format:{rs}%H{us}%an{us}%ae{us}%cd{us}%s"
+    rs, us, gs = "%x1e" + token, "%x1f" + token, "%x1d" + token
+    trailers = ("%(trailers:key=Co-authored-by,valueonly,unfold,"
+                f"separator={gs})")
+    return f"--pretty=format:{rs}%H{us}%an{us}%ae{us}%cd{us}%s{us}{trailers}"
+
+
+#: At most this many co-authors are kept per commit, each cut at
+#: MAX_COAUTHOR_CHARS: a commit can carry thousands of trailers.
+MAX_COAUTHORS = 20
+MAX_COAUTHOR_CHARS = 200
+
+
+def _coauthors(field: str, token: str) -> list[str]:
+    if not field or field.startswith("%("):     # old git: no trailers
+        return []
+    names = [" ".join(v.split())[:MAX_COAUTHOR_CHARS]
+             for v in field.split("\x1d" + token)]
+    return [n for n in names if n][:MAX_COAUTHORS]
 
 
 # What a record must look like to be believed: a hex sha (the exact set of
@@ -357,8 +483,9 @@ _DAY_RE = re.compile(r"\d+-\d\d-\d\d")
 def parse_log(out: str, token: str = "") -> list[Commit]:
     """Parse the output of `git log -z <_log_format(token)> --name-only`.
 
-    A record that is not exactly five fields, or whose sha is not hex or
-    whose date is not YYYY-MM-DD, is dropped rather than guessed at."""
+    A record that is not five fields (six with the co-author trailers), or
+    whose sha is not hex or whose date is not YYYY-MM-DD, is dropped rather
+    than guessed at."""
     rs, us = "\x1e" + token, "\x1f" + token
     commits: list[Commit] = []
     for record in out.split(rs):
@@ -366,17 +493,20 @@ def parse_log(out: str, token: str = "") -> list[Commit]:
         header = header.strip("\0")
         if not header:
             continue
-        fields = header.split(us, 4)
-        if len(fields) != 5:
+        fields = header.split(us, 5)
+        if len(fields) == 5:
+            fields.append("")
+        if len(fields) != 6:
             continue
-        sha, an, ae, ad, subject = fields
+        sha, an, ae, ad, subject, trailers = fields
         if not (_SHA_RE.fullmatch(sha) and _DAY_RE.fullmatch(ad)):
             continue
         m = _MERGE_RE.search(subject)
         commits.append(Commit(
             sha=sha, author=an, email=ae, date=ad, subject=subject,
             files=[p for p in body.split("\0") if p],
-            pr_number=int(m.group(1)) if m else None))
+            pr_number=int(m.group(1)) if m else None,
+            coauthors=_coauthors(trailers, token)))
     return commits
 
 

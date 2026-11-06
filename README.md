@@ -1,24 +1,76 @@
 # StandupGuy (`standupguy`)
 
-Kill the tracker trap without leaking data.
+**Your standup, written from git, on your own computer.** One command turns
+your commits since the last workday into Markdown you can paste, post to
+Slack, hand to a local model, or serve to an agent over MCP. No account, no
+cloud, no dependencies.
 
-Engineers lose up to 2/5 of the week to reporting busywork — duplicating
-updates across Jira, Slack, Confluence, and slide decks. AI note-takers are
-cloud SaaS with data-leak concerns. `standupguy` is the local-first
-alternative: it reads your **git history** (ground truth) and drafts your
+`standupguy` reads your **git history** (ground truth) and drafts your
 standup notes, weekly summary, and sprint-review bullets as Markdown.
 **Your history never leaves your laptop** — except to the model endpoint
-*you* configure (Ollama on localhost by default).
+*you* configure (Ollama on localhost by default), and `--dry-run` shows you
+exactly what that would be before anything is sent.
+
+```console
+$ standupguy            # run on a Monday: the window starts on Friday
+# Standup — myrepo
+_since last workday (Fri 2026-10-16)_
+
+## Shipped
+### Features
+- add login flow (1 file) `6785c87`
+### Fixes
+- null pointer on logout (1 file) `8ce2731`
+
+## In progress (uncommitted)
+- `wip.py`
+
+## Blockers
+_none reported — fill in yours_
+```
+
+_(A synthetic example repo; your output names your own commits.)_
+
+## How it compares
+
+Only what each project's own page says; follow the links. "—" means the
+page does not mention it.
+
+| | standupguy | [git-standup](https://github.com/kamranahmedse/git-standup) | [standup-ai](https://pypi.org/project/standup-ai/) | [dawnlog](https://github.com/yyalim/dawnlog) | [standupbrain](https://pypi.org/project/standupbrain/) | [Geekbot](https://geekbot.com/pricing/) |
+|---|---|---|---|---|---|---|
+| Reads | local git | local git | local git | local git | git, GitHub, Jira | answers people type in Slack |
+| Runs | on your computer | on your computer | on your computer | on your computer | on your computer | hosted SaaS |
+| Monday covers Friday | yes (`--workdays`) | yes (`-w`) | — | via `--since` | — | n/a |
+| Co-authored-by counts as yours | yes | no ([open issue #129](https://github.com/kamranahmedse/git-standup/issues/129)) | — | — | — | n/a |
+| Several repos | `--root` (repeat) | scans folders (`-m` depth) | yes | yes | — | n/a |
+| LLM prose | any OpenAI-compatible endpoint, Ollama by default | no | Claude, OpenAI, Ollama | Ollama, Anthropic, OpenAI | local LLM | Geekbot AI (paid plan) |
+| See the prompt before sending | `--dry-run` | n/a | — | `--dry-run` | `--dry-run` | n/a |
+| Slack | webhook, mentions and markup escaped | no | Slack-formatted output | planned | — | native |
+| MCP server / HTTP bridge | both | no | — | — | — | — |
+| Hostile commit text (terminal escapes, bidi, invisible tags) | shown as visible escapes | — | — | — | — | n/a |
+| Price | free, MIT | free, MIT | free, MIT | — | — | free up to 10 users, then $2.50/participant/month billed yearly ($3 billed monthly) |
+
+What the others do better: git-standup scans a folder tree for repos by
+itself, can show a diff-stat per commit (`-c`) and fetches first (`-f`);
+standup-ai and dawnlog ship several output styles and templates, and
+standup-ai copies to the clipboard; standupbrain also reads GitHub and
+Jira; Geekbot collects what people *say*, not only what they committed.
 
 ## Install
 
 Zero dependencies — Python 3.10+ stdlib only. Needs `git` on your PATH
-(on Windows: [Git for Windows](https://git-scm.com/download/win)).
+(on Windows: [Git for Windows](https://git-scm.com/download/win)). The
+co-author matching needs a git whose `%(trailers)` format takes `key=` and
+`separator=` (tested with git 2.43); an older git simply finds no
+co-authors.
 
 ```bash
 pip install git+https://github.com/calasdan-sketch/standupguy
 standupguy --version
 ```
+
+`pip install standupguy` installs the last release published to PyPI, which
+can be older than this README (0.2.0 is not published yet).
 
 That installs the `standupguy` command (`py -m standupguy` / `python -m
 standupguy` works too). From a checkout: `pip install .`
@@ -26,7 +78,9 @@ standupguy` works too). From a checkout: `pip install .`
 ## Usage
 
 ```bash
-standupguy                          # yesterday's digest (deterministic, offline)
+standupguy                          # since the last workday: Friday on a Monday (offline)
+standupguy --workdays sun-thu       # ...for a Sunday-to-Thursday week (or STANDUPGUY_WORKDAYS)
+standupguy --since yesterday        # ...or just yesterday, as before 0.2.0
 standupguy --week                   # last 7 days, grouped by day
 standupguy --sprint                 # sprint review: last 14 days, by day, + carried over
 standupguy --sprint 10              # ...or an N-day window
@@ -34,6 +88,8 @@ standupguy --sprint --since 2026-10-01 --until 2026-10-14   # ...or an exact ran
 standupguy --since 2026-10-01       # custom range (--until optional, inclusive)
 standupguy --root ../api --root ../web   # several repos: one section per repo
 standupguy --draft                  # LLM prose: Yesterday / Today / Blockers
+standupguy --draft --dry-run        # show the exact prompt and endpoint; send nothing
+standupguy --push-slack --dry-run   # show the exact Slack text; post nothing
 standupguy --format json            # machine-readable digest
 standupguy --author "teammate@co"   # filter (default: your git user)
 standupguy --all                    # everyone
@@ -53,7 +109,7 @@ An option that takes a value and gets an empty one (`--push-slack "$HOOK"`
 when `$HOOK` was never set) is an `error:` line and exit code 2, before git
 is run or anything is sent - never a quiet fall-back to the default. That
 covers `--root`, `--author`, `--since`, `--until`, `--push-slack`,
-`--base-url`, `--model` and `--host`. Leave the option out to get its
+`--base-url`, `--model`, `--host` and `--workdays`. Leave the option out to get its
 default; a bare `--push-slack` posts to `AUTOSTANDUP_SLACK_WEBHOOK`. An
 empty environment variable counts as not set, and so does a blank value in
 a request to `serve` or in an argument of an `mcp` tool (`until=`).
@@ -82,13 +138,43 @@ The digest is the history of the branch that is checked out
 not merged yet, is not in it. `--all` means every author, not every branch.
 Check the branch out to see its work (`git switch feature/login`).
 
-`--author` matches like you'd expect, not like a regex: a case-insensitive
-substring of the author **name or email** (`calas`, `DAN@EXAMPLE.COM`,
-`ξένος`, `"Dan Calas <dan@example.com>"` all work; unicode names are
+`--author` matches like you'd expect, not like a regex. A whole e-mail
+address (`DAN@EXAMPLE.COM`, and the default, your `git config user.email`)
+matches that address **exactly**, ignoring case: `dan@example.com` does not
+pick up `jordan@example.com`. Anything else is a case-insensitive substring
+of the author **name or email** (`calas`, `dan@example`, `ξένος`,
+`"Dan Calas <dan@example.com>"` all work; unicode names are
 matched case-insensitively, surrounding spaces are ignored, and `+`, `.`
 or `[` in an address are literal — git's own `--author` is a case-sensitive
 regex and would miss or fail on those). The default is your `git config
 user.email`.
+
+**Pair work counts.** A commit someone else made with a
+`Co-authored-by: Your Name <you@example.com>` trailer (the line
+[GitHub documents](https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/creating-a-commit-with-multiple-authors)
+for pairing) matches `--author` the same way (an e-mail needle against
+the address in `<...>`, exactly), so it is in your digest. Only real
+trailers count (the last paragraph of the message); `--format json` lists
+them in each commit's `coauthors`. GitHub often writes your *noreply*
+address in these trailers (`12345+you@users.noreply.github.com`), which
+your usual `user.email` does not match: pass a name instead
+(`--author "Your Name"`) or that address.
+
+### The default window: since the last workday
+
+With no `--since`, the daily digest starts at midnight of the **last
+workday** before today: on a Monday (or a weekend) that is Friday, on
+Tuesday to Friday it is yesterday. The weekend's commits are in it, so
+Monday's standup is not empty. The heading says which day it picked
+(`_since last workday (Fri 2026-10-16)_`).
+
+Your week is `--workdays` (or `STANDUPGUY_WORKDAYS`): `mon-fri` by default,
+`sun-thu`, `mon,wed,fri`, a range that wraps (`fri-mon`) - names of three
+letters or more, any case. A value that names no weekday is an `error:`
+line and exit code 2, never a quiet Monday-to-Friday. `last workday` is also
+a value you can type anywhere a date goes (`--until`, `serve`'s `since=`,
+the MCP tool's `since`). Public holidays are not known: on the Tuesday after
+a holiday Monday, `last workday` is that Monday.
 
 ## Activepieces
 
@@ -102,14 +188,14 @@ standupguy serve --root /path/to/repo   # localhost:8765
 `--port N` picks another port (default 8765); `--port 0` lets the system
 choose a free one, and the line `serve` prints when it starts says which.
 
-- `GET /digest?since=yesterday&until=&author=&all=&format=json|markdown`
+- `GET /digest?since=last%20workday&until=&author=&all=&format=json|markdown`
 - `GET /week?since=&until=&author=&all=&format=json|markdown`
 - `GET /health`
 
 Defaults are the CLI's: `author` is the repo's `git config user.email`
-(`all=1` for everyone), `since` is `yesterday` (`/week`: 7 days ago), and
-the JSON `commits` have exactly the shape of `standupguy --format json`
-(`sha, author, email, date, subject, files, pr, wip`) plus the rendered
+(`all=1` for everyone), `since` is `last workday` (`/week`: 7 days ago),
+and the JSON `commits` have exactly the shape of `standupguy --format json`
+(`sha, author, email, date, subject, files, pr, wip, coauthors`) plus the rendered
 `markdown` and `slack_text` — the same digest already sanitized and
 escaped for Slack (see *Push* below); a workflow that posts to Slack
 should send `slack_text`, never raw `markdown`. An impossible date
@@ -196,25 +282,6 @@ Slack. Connect your Slack connection, set the channel, done. The same
 `serve` endpoints work from n8n's HTTP Request node too — nothing in the
 bridge is platform-specific.
 
-Example output:
-
-```markdown
-# Standup — myrepo
-_since 2026-10-14_
-
-## Shipped
-### Features
-- add login flow (1 files) `6785c87`
-### Fixes
-- null pointer on logout (1 files) `8ce2731`
-
-## In progress (uncommitted)
-- `wip.py`
-
-## Blockers
-_none reported — fill in yours_
-```
-
 ## How it works
 
 - **Digest mode (default):** pure Python, fully offline. Commits grouped by
@@ -230,8 +297,23 @@ _none reported — fill in yours_
   Text printed to a terminal (the digest, a `--draft` reply) shows every
   control character as a visible escape — `\x1b` for ESC, `\x0d` for a
   carriage return, the same for the C1 range — so a commit cannot clear
-  your screen, retitle the window or overwrite a line. `--format json`,
-  `serve` and the MCP server are not terminals and carry the text exactly.
+  your screen, retitle the window or overwrite a line. The same goes for
+  characters that are invisible or reorder a line without being control
+  characters: the bidirectional overrides and isolates of
+  [Trojan Source](https://trojansource.codes/) (`\u202e`), zero-width
+  spaces, the BOM, line and paragraph separators, and the Unicode *tag*
+  characters (`\U000e0041`), invisible copies of ASCII that a language
+  model still reads, the variation selectors (`\U000e0100`, 256 of them:
+  enough to hide a byte each), the soft hyphen and a few other characters
+  that render as nothing. Zero-width joiners stay, because emoji and Persian
+  or Indic writing need them, and so does one emoji-style selector right
+  after a visible character (U+FE0F, which turns a heart into a red-heart
+  emoji); a second one, or one anywhere else, is escaped. This is a list of the characters standupguy knows
+  about, not a guarantee about every character a font may draw as nothing.
+  A line break inside a field (a file named `wip` + newline + `---`) is
+  shown as `\n` in every Markdown output, so it cannot start a line of its
+  own. `--format json`, `serve` and the MCP server are
+  not terminals and carry the text exactly; their `slack_text` is escaped.
 - **Sprint mode (`--sprint [DAYS]`):** the last DAYS days (default 14), or
   `--since`/`--until`, grouped by day with the same prefix buckets, then a
   **Carried over** section: commits *tagged* WIP/draft (`wip: …`, `WIP …`,
@@ -241,6 +323,20 @@ _none reported — fill in yours_
   prompt.
 - **Draft mode (`--draft`):** sends the digest to your local model via an
   OpenAI-compatible endpoint and gets back Yesterday/Today/Blockers prose.
+  The digest goes into the prompt with the same visible escapes as on the
+  terminal (every variation selector included), so text hidden with the
+  characters listed above reaches the model only as escapes you could have
+  read. It sits between two marker lines with a random token picked for
+  each prompt (no commit text can close them early), and the prompt tells
+  the model the digest is data and not to follow instructions in it. That
+  makes prompt injection from commit text harder, not impossible: a model
+  can still be swayed by plainly visible text. `--draft
+  --dry-run` prints the endpoint (scheme, host and port, plus only the
+  usual API words of the path such as `v1`; any other path part is `***`,
+  and no login or query string), the
+  model, whether an API key is set (never the key) and the exact prompt,
+  and sends nothing; `--push-slack --dry-run` prints the exact text that
+  would be posted. `--dry-run` with neither is an `error:` (exit code 2).
   If the model is down, hangs up, or answers with anything but a
   completion (an HTML error page, an empty or cut-off body), you get one
   `error:` line on stderr and the plain digest on stdout. The exit code is
@@ -290,7 +386,8 @@ export AUTOSTANDUP_API_KEY="<your key>"
   running after either, and notifications are never answered.
 - **Push:** `--push-slack` POSTs the Markdown to a Slack incoming webhook
   (URL from the flag or `AUTOSTANDUP_SLACK_WEBHOOK`). Commit-derived text
-  is sanitized before posting: control characters stripped, lines
+  is sanitized before posting: control characters stripped, bidi,
+  zero-width and tag characters shown as escapes (as on a terminal), lines
   truncated at 500 chars, `@channel`/`@here`/`@everyone` (and the
   `<!channel>` markup form) rewritten as `[at]channel`-style text, and
   Slack's markup characters `&`, `<`, `>` escaped to `&amp;`, `&lt;`,
@@ -319,7 +416,7 @@ without a time of day starts at midnight, and any `--until` value without
 one ends at 23:59:59 (**a bare `--until` date is inclusive**: `--since
 2026-10-14 --until 2026-10-15` is both days).
 
-`today`, `yesterday`, `N days ago` and `N weeks ago` are worked out by
+`today`, `yesterday`, `N days ago`, `N weeks ago` and `last workday` are worked out by
 `standupguy` as **whole local calendar days** and handed to git as an
 explicit date. (Git counts them in blocks of 24 hours back from now, which
 is the wrong day during the first or last hour after midnight on the day
@@ -331,6 +428,7 @@ as if you had typed `--since="last monday 00:00"`:
 | you type (today is 2026-10-17) | `--since` gets | `--until` gets |
 |---|---|---|
 | `yesterday` | `2026-10-16 00:00` | `2026-10-16 23:59:59` |
+| `last workday` (a Saturday: the Friday) | `2026-10-16 00:00` | `2026-10-16 23:59:59` |
 | `today`, `3 days ago`, `2 weeks ago` | `2026-10-17 00:00`, `2026-10-14 00:00`, `2026-10-03 00:00` | the same days, at `23:59:59` |
 | `last monday`, `3 months ago` | `last monday 00:00`, … | `last monday 23:59:59`, … |
 | `2026-10-14`, `20261014` | `2026-10-14 00:00` | `2026-10-14 23:59:59` |
@@ -424,12 +522,17 @@ or later) already installed - they work offline and download nothing.
   today to git: the command line warns about it, `serve` and `mcp` do not.
 - **Windows.** This release was developed and tested on Linux. What is
   specific to Windows (a closed pipe that is not a `BrokenPipeError`, the
-  cp1252 console, UTF-8 on the MCP wire) is covered by Linux stand-ins, not
-  by a run on Windows.
-- **Line endings.** The repository's text files are committed with Windows
-  (CRLF) line endings and there is no `.gitattributes`: keep them when you
-  edit a file. On Linux and macOS `git diff` flags them as trailing
-  whitespace.
+  cp1252 console, UTF-8 on the MCP wire) is covered by Linux stand-ins; the
+  CI workflow (`.github/workflows/ci.yml`) also runs the suite on Windows
+  and macOS.
+- **Last workday.** Weekends come from `--workdays`; public holidays are not
+  known.
+- **Co-authors.** Anyone can write a `Co-authored-by:` trailer naming you,
+  the same way anyone can set their author e-mail to yours: the digest
+  shows what the history says, it does not verify identities (nor does
+  `git log --author`).
+- **Not built in:** scanning a folder tree for repos, per-commit diff-stats,
+  clipboard copy, templates. See *How it compares* for tools that have them.
 
 ## License
 
