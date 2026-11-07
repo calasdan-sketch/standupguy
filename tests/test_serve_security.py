@@ -25,7 +25,6 @@ import unittest
 from unittest import mock
 
 from test_standupguy import make_repo  # isolates git/HOME
-from test_round5 import run_cli
 
 from standupguy import cli as cli_mod
 from standupguy import serve as serve_mod

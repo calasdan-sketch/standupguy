@@ -14,6 +14,7 @@ Your history never touches a cloud SaaS.
   standupguy mcp              # MCP server: ask "what did I ship this week"
   standupguy serve            # HTTP bridge for n8n / Activepieces (--root
                               # repeats here too)
+  standupguy doctor           # check this install: git, Python, encoding
 """
 
 from __future__ import annotations
@@ -21,8 +22,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 
+from . import __version__
 from . import digest as digest_mod
 from . import draft as draft_mod
 from . import formats as formats_mod
@@ -35,7 +38,7 @@ from . import scan as scan_mod
 from . import serve as serve_mod
 from . import stdio as stdio_mod
 
-VERSION = "0.3.0"
+VERSION = __version__
 
 
 def _harden_streams() -> None:
@@ -113,7 +116,41 @@ def _check_dates(args) -> bool:
             return False
         if warning:
             print(f"warning: {flag} {warning}", file=sys.stderr)
+    if _is_plain_day(args.since) and _is_plain_day(args.until) \
+            and args.since.strip() > args.until.strip():
+        print(f"error: --since {args.since.strip()} is after --until "
+              f"{args.until.strip()}, so no day can match; swap them",
+              file=sys.stderr)
+        return False
     return True
+
+
+def _is_plain_day(value) -> bool:
+    return isinstance(value, str) and re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}", value.strip()) is not None
+
+
+def _author_hint(args, root, since, until, author, commits) -> None:
+    """A stranger whose git e-mail differs from the one on their commits
+    sees an empty digest and no reason. When the digest is empty ONLY
+    because of the author filter, say so (stderr; the output is unchanged)."""
+    if commits or not author or args.scan:   # --scan hides quiet repos itself
+        return
+    try:
+        others = gitlog_mod.commits_since(root, since, None, until)
+    except (gitlog_mod.GitNotFound, gitlog_mod.GitTimeout):
+        raise
+    except RuntimeError:
+        return
+    if others:
+        n = len(others)
+        where = f" in {gitlog_mod.repo_name(root)}" \
+            if len(args.root or ()) > 1 else ""
+        print(stdio_mod.printable(
+            f"note: nothing by '{author}'{where} in this window, but {n} "
+            f"commit{'s' if n != 1 else ''} by other authors - "
+            "use --all to see them, or --author to name the right person"),
+            file=sys.stderr)
 
 
 def _options(args) -> digest_mod.Options:
@@ -134,6 +171,7 @@ def _repo_digest(args, root: str, opts=None) -> tuple[str, dict]:
     commits = gitlog_mod.commits_since(root, since, author, until,
                                        stat=args.stat)
     in_progress = gitlog_mod.uncommitted(root)
+    _author_hint(args, root, since, until, author, commits)
     found = inflight_mod.find(root, since, until, author) \
         if opts.inflight and not args.week else []
     if args.sprint is not None:
@@ -371,7 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "instead of sending anything.")
     p.add_argument("--base-url", default=None)
     p.add_argument("--model", default=None)
-    p.add_argument("cmd", nargs="?", choices=["mcp", "serve"],
+    p.add_argument("cmd", nargs="?", choices=["mcp", "serve", "doctor"],
                    help="Run the MCP server (mcp) or HTTP bridge (serve) "
                         "for n8n / workflow tools.")
     p.add_argument("--port", type=_port, default=8765,
@@ -551,6 +589,13 @@ def _check_holidays(args) -> bool:
     return True
 
 
+def _same_path(path: str) -> str:
+    """A folder in a form two spellings of it share: symbolic links
+    resolved, and (on Windows only) upper and lower case folded, so
+    `C:\\Code\\App` and `c:\\code\\app` are one repository."""
+    return os.path.normcase(os.path.realpath(path))
+
+
 def _expand_scan(args) -> bool:
     """Add the repos --scan finds to args.root. False (after saying why) when
     a scan cannot be done honestly."""
@@ -564,7 +609,7 @@ def _expand_scan(args) -> bool:
             print(stdio_mod.printable(f"error: {e}"), file=sys.stderr)
             return False
     roots = list(args.root or [])
-    seen = {os.path.realpath(r) for r in roots}
+    seen = {_same_path(r) for r in roots}
     for repo in found:
         # a repo git will not open (owned by another user, say) is skipped
         # with a word, not fatal: the rest of the scan still counts
@@ -577,8 +622,8 @@ def _expand_scan(args) -> bool:
                 f"warning: skipped {repo}: git cannot open it"),
                 file=sys.stderr)
             continue
-        if os.path.realpath(repo) not in seen:
-            seen.add(os.path.realpath(repo))
+        if _same_path(repo) not in seen:
+            seen.add(_same_path(repo))
             roots.append(repo)
     if not roots:
         print("note: --scan found no git repositories", file=sys.stderr)
@@ -598,6 +643,51 @@ def _check_dry_run(args) -> bool:
           "what they would send); the digest itself sends nothing anyway",
           file=sys.stderr)
     return False
+
+
+def cmd_doctor() -> int:
+    """`standupguy doctor`: what this install can and cannot do, in plain
+    words, for a first run or a bug report. Reads nothing but the version of
+    git and the current folder's git e-mail; sends nothing anywhere."""
+    import platform
+    out = stdio_mod.stdout()
+    rows = [("standupguy", __version__),
+            ("python", f"{platform.python_version()} on {platform.system()}"),
+            ("output encoding", getattr(out, "encoding", None) or "unknown")]
+    problems = 0
+    try:
+        said = gitlog_mod._git(os.getcwd(), "--version").strip()
+    except gitlog_mod.GitNotFound as e:
+        rows.append(("git", f"NOT FOUND - {e}"))
+        problems += 1
+        said = ""
+    except (gitlog_mod.GitError, gitlog_mod.GitTimeout) as e:
+        rows.append(("git", f"did not answer ({e})"))
+        problems += 1
+        said = ""
+    if said:
+        rows.append(("git", said))
+        found = re.search(r"(\d+)\.(\d+)", said)
+        have = (int(found.group(1)), int(found.group(2))) if found else None
+        if have is None:
+            rows.append(("git features", "version not recognised"))
+        elif have < (2, 26):
+            rows.append(("git features", "too old for the 'In progress' list "
+                         "(needs 2.26); update git"))
+            problems += 1
+        else:
+            rows.append(("git features", "all available"))
+        try:
+            email = gitlog_mod.default_author(os.getcwd())
+        except (gitlog_mod.GitNotFound, gitlog_mod.GitTimeout):
+            email = ""
+        rows.append(("git e-mail here", email or
+                     "not set (the digest will show every author; "
+                     "`git config user.email you@x`)"))
+    for name, value in rows:
+        out.write(stdio_mod.printable(f"{name:17}{value}\n"))
+    out.write("ok\n" if not problems else "problems found (see above)\n")
+    return 0 if not problems else 2
 
 
 def main(argv=None) -> int:
@@ -624,6 +714,12 @@ def main(argv=None) -> int:
 def _main(argv=None) -> int:
     _harden_streams()
     args = build_parser().parse_args(argv)
+    if args.cmd == "doctor":
+        try:
+            return cmd_doctor()
+        except gitlog_mod.GitNotFound as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
     if not _check_values(args) or not _check_redact_env(args):
         return 2
     if args.scan and args.cmd is None and not (0 <= args.scan_depth

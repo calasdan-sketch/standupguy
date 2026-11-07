@@ -3,6 +3,36 @@
 ## 0.3.0 - unreleased
 
 Measured by `python bench/bench.py` (see the README, *What changed in 0.3.0*).
+PyPI has 0.1.0 (read-only `pip index versions standupguy`): the next release
+is 0.3.0, which also carries everything listed under 0.2.0 below.
+
+### Added (round 4: the first hour of a stranger who installs it)
+- `standupguy doctor`: git found and new enough, Python, output encoding, the
+  git e-mail the digest will filter by. One plain line each; exit 2 only if
+  git is missing or too old. Sends nothing.
+- `standupguy.__version__`; `--version`, the MCP server's `serverInfo` and
+  `pyproject.toml` now come from one place and a test keeps the CHANGELOG
+  heading in step.
+- When the digest has no commits only because of the author filter (your git
+  e-mail is not the one on your commits, a common first run), a `note:` on
+  stderr says how many commits other authors made in the window and points at
+  `--all` / `--author`. Output and `--format json` are unchanged.
+- Package metadata: author (Calas Automations Inc.), Source and Changelog
+  URLs.
+
+### Fixed (round 4)
+- `--since 2026-10-15 --until 2026-10-14` (two plain dates, backwards) was an
+  empty digest with a cheerful message; it is now `error:` and exit 2.
+- A `PATH` entry that is a file, or a `git` that may not be run, was a
+  traceback (`NotADirectoryError`, `PermissionError`); it is now the usual
+  `git not found on PATH` line.
+- Windows: `--scan` / `--root` duplicates, linked worktrees and Claude Code
+  session folders were compared case-sensitively; now `os.path.normcase`d
+  (not run on Windows).
+- README: it said 0.2.0 was unpublished; PyPI has 0.1.0. The Windows section
+  claimed "works on Windows 11"; it now says it was not run there.
+- Lint: unused imports and a variable in the tests; a `ruff` config
+  (`F`, `E9`) so the check is the same for everyone.
 
 ### Added (round 3: expert review of the 0.3.0 line)
 - `--scan DIR` (repeatable) and `--scan-depth N`: digest every git repo under

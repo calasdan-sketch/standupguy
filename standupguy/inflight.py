@@ -148,8 +148,9 @@ def _date_of(arg: str):
 
 def _worktrees(root, since, until, author):
     out = g._git(root, "worktree", "list", "--porcelain")
-    here = os.path.realpath(g._git(root, "rev-parse", "--show-toplevel").strip()
-                            ) if _is_worktree(root) else None
+    here = os.path.normcase(os.path.realpath(
+        g._git(root, "rev-parse", "--show-toplevel").strip())
+    ) if _is_worktree(root) else None
     items = []
     path = branch = None
     blocks = []
@@ -162,7 +163,7 @@ def _worktrees(root, since, until, author):
             blocks.append((path, branch))
             path = branch = None
     for wt, br in blocks:
-        if here and os.path.realpath(wt) == here:
+        if here and os.path.normcase(os.path.realpath(wt)) == here:
             continue
         try:
             dirty = g.uncommitted(wt)

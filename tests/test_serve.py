@@ -122,7 +122,6 @@ class TestWorkflow(unittest.TestCase):
     def test_valid_activepieces_flow(self):
         with open(self.PATH, encoding="utf-8") as f:
             wf = json.load(f)
-        steps = {s["id"]: s for s in wf["steps"]}
         pieces = [s["piece"] for s in wf["steps"]]
         # required steps present: schedule trigger, HTTP, branch, Slack
         self.assertTrue(any("Schedule" in p for p in pieces),

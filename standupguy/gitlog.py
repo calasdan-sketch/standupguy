@@ -123,7 +123,8 @@ def _git(root: str, *args: str, env: dict | None = None,
     try:
         p = subprocess.run(["git", *config, "-C", root, *args], capture_output=True,
                            timeout=GIT_TIMEOUT, env=full_env)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError, PermissionError):
+        # no git on PATH, a PATH entry that is a file, or a git we may not run
         raise GitNotFound(GIT_NOT_FOUND_MESSAGE) from None
     except subprocess.TimeoutExpired:
         raise GitTimeout(args[0] if args else "", GIT_TIMEOUT) from None

@@ -41,6 +41,7 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python" -m pip install dist/*.whl
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/venv/bin/standupguy" --version
+          "$RUNNER_TEMP/venv/bin/standupguy" doctor
       - uses: actions/upload-artifact@v4
         with:
           name: dist

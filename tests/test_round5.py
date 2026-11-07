@@ -948,6 +948,9 @@ class TestPyprojectMetadata(unittest.TestCase):
         self.assertEqual(self.project["urls"], {
             "Homepage": "https://github.com/calasdan-sketch/standupguy",
             "Issues": "https://github.com/calasdan-sketch/standupguy/issues",
+            "Source": "https://github.com/calasdan-sketch/standupguy",
+            "Changelog": "https://github.com/calasdan-sketch/standupguy/blob/"
+                         "main/CHANGELOG.md",
         })
 
 

@@ -85,6 +85,11 @@ every git-standup and dawnlog entry is from the earlier reading and
 test (a `core.fsmonitor` command in a repo's config); it was not run against
 the other tools, so they get "—".
 
+Round 4 re-read the source of standup-ai 0.2.0 and standupbrain 1.0.4 from
+their wheels (downloaded, not run; both are still the newest on PyPI): the
+table above still matches (clipboard in standup-ai, `--dry-run` in
+standupbrain, no redaction, co-author or repo-config handling in either).
+
 What the others do better: git-standup fetches first (`-f`) and its folder
 scan is older and more tested than ours; standup-ai and dawnlog ship several output styles and templates, and
 standup-ai copies to the clipboard; standupbrain also reads GitHub and
@@ -103,8 +108,12 @@ pip install git+https://github.com/calasdan-sketch/standupguy
 standupguy --version
 ```
 
-`pip install standupguy` installs the last release published to PyPI, which
-can be older than this README (0.2.0 is not published yet).
+`pip install standupguy` installs the last release published to PyPI. When
+this was written that was 0.1.0, which has none of what this README describes
+beyond the basic digest (checked with `pip index versions standupguy`); until
+0.3.0 is released, use the `git+https` line above. After installing, run
+`standupguy doctor`: it says in plain words whether git is found and new
+enough, which Python this is, and which git e-mail the digest will filter by.
 
 That installs the `standupguy` command (`py -m standupguy` / `python -m
 standupguy` works too). From a checkout: `pip install .`
@@ -138,6 +147,7 @@ standupguy --format json            # machine-readable digest
 standupguy --author "teammate@co"   # filter (default: your git user)
 standupguy --all                    # everyone
 standupguy --push-slack             # POST to AUTOSTANDUP_SLACK_WEBHOOK
+standupguy doctor                   # check this install (git, Python, encoding); sends nothing
 standupguy mcp                      # MCP server on stdio
 standupguy serve                    # HTTP bridge for Activepieces / workflow tools (this computer only)
 standupguy serve --port 9000        # ...on another port (default 8765)
@@ -637,15 +647,18 @@ today is today's work.
 
 ## Windows
 
-Works on Windows 11 / Python 3.11: git output is decoded as UTF-8 (paths
+Written to work on Windows, **not run on it by the author**: the checks below
+are static review plus Linux stand-ins, and the CI workflow runs the suite on
+Windows. What the code does for Windows: git output is decoded as UTF-8 (paths
 and authors come back raw, never `caf\303\251.py`), non-ASCII commit
 subjects (or the 🌱) print on a cp1252 console without
 `UnicodeEncodeError` — unencodable characters are replaced — and the MCP
 server reads and writes UTF-8 bytes whatever the console code page. If
 `git` is not installed you get `error: git not found on PATH` (exit 2),
-not a traceback. `pip install .` works (the package is declared
-explicitly; setuptools' flat-layout auto-discovery used to refuse the
-repo).
+not a traceback. Repository paths are compared case-insensitively there
+(`C:\Code\App` and `c:\code\app` are one repo for `--scan` and worktrees).
+`pip install .` works (the package is declared explicitly; setuptools'
+flat-layout auto-discovery used to refuse the repo).
 
 ## Tests
 

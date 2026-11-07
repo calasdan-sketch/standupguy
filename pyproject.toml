@@ -10,6 +10,7 @@ description = "Local-first standup notes from git ground truth."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
+authors = [{ name = "Calas Automations Inc." }]
 requires-python = ">=3.10"
 keywords = [
     "git", "standup", "daily-standup", "sprint-review", "digest", "cli",
@@ -31,6 +32,8 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/calasdan-sketch/standupguy"
 Issues = "https://github.com/calasdan-sketch/standupguy/issues"
+Source = "https://github.com/calasdan-sketch/standupguy"
+Changelog = "https://github.com/calasdan-sketch/standupguy/blob/main/CHANGELOG.md"
 
 [project.scripts]
 standupguy = "standupguy.cli:main"
@@ -46,3 +49,7 @@ packages = ["standupguy"]
 # `python -m unittest discover -s tests` does.
 pythonpath = ["tests"]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Real defects only (unused names, syntax errors); style is not enforced.
+select = ["F", "E9"]

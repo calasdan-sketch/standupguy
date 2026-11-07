@@ -19,7 +19,6 @@ import contextlib
 import datetime
 import json
 import os
-import subprocess
 import tempfile
 import unittest
 from unittest import mock

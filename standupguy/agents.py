@@ -115,7 +115,7 @@ def sessions(root: str, first_day: datetime.date,
     """[{prompts: int, first: str}] for each transcript whose working
     directory is `root` and that has a request on a day in range."""
     base = projects_dir or _projects_dir()
-    root_real = os.path.realpath(root)
+    root_real = os.path.normcase(os.path.realpath(root))
     found = []
     try:
         names = sorted(os.listdir(base))
@@ -157,7 +157,7 @@ def _read_session(path, root_real, first_day, last_day):
                 if not isinstance(rec, dict):
                     continue
                 cwd = rec.get("cwd")
-                if isinstance(cwd, str) and os.path.realpath(cwd) == root_real:
+                if isinstance(cwd, str) and os.path.normcase(os.path.realpath(cwd)) == root_real:
                     cwd_ok = True
                 if rec.get("type") != "user" or rec.get("isSidechain") \
                         or rec.get("isMeta"):
