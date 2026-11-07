@@ -4,3 +4,4 @@
 recursive-include tests *.py
 recursive-include workflows *.json
 include CHANGELOG.md
+graft bench

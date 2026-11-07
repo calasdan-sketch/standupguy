@@ -31,6 +31,15 @@ _none reported — fill in yours_
 
 _(A synthetic example repo; your output names your own commits.)_
 
+**New in 0.3.0** (details under *What changed in 0.3.0*): ticket keys and
+pull-request numbers on every line (`ABC-123`, `#77`, squash `(#412)`),
+commits grouped by what they did even when nobody writes `feat:`,
+fixup/WIP noise folded (and counted), secrets and internal links redacted
+before anything is shown, copied, posted or sent to a model, work on other
+branches, stashes and worktrees included, agent-assisted commits flagged,
+`--format plain|slack|teams`, `--copy`, and a Yesterday / Today / Blockers
+style that needs no model.
+
 ## How it compares
 
 Only what each project's own page says; follow the links. "—" means the
@@ -48,7 +57,20 @@ page does not mention it.
 | Slack | webhook, mentions and markup escaped | no | Slack-formatted output | planned | — | native |
 | MCP server / HTTP bridge | both | no | — | — | — | — |
 | Hostile commit text (terminal escapes, bidi, invisible tags) | shown as visible escapes | — | — | — | — | n/a |
+| Ticket keys, issue and PR numbers on each line | `ABC-123`, `#77`, squash and merge PRs | — | — | — | Jira activity | n/a |
+| Noise (fixup!, WIP saves, branch syncs) folded | yes, counted | — | — | — | — | n/a |
+| Secrets and internal links removed before sharing | yes (pattern-based, default on) | — | — | — | — | n/a |
+| Work on other branches, stashes, worktrees | yes | — | — | — | — | n/a |
+| Agent-assisted commits flagged | yes | — | — | — | — | n/a |
+| Output formats / clipboard | plain, Slack, Teams, Markdown; `--copy` | — | `--style slack`, `--copy` | — | — | n/a |
 | Price | free, MIT | free, MIT | free, MIT | — | — | free up to 10 users, then $2.50/participant/month billed yearly ($3 billed monthly) |
+
+The new rows for standup-ai and standupbrain come from reading the
+source of their PyPI packages (standup-ai 0.2.0, standupbrain 1.0.4); they
+were read, not run. "—" there means the package and its README do not
+mention it. For git-standup, "—"/"no" is from its README as quoted in the
+earlier rows; this environment could not fetch that repository again, so the
+new rows are **unverified** for it.
 
 What the others do better: git-standup scans a folder tree for repos by
 itself, can show a diff-stat per commit (`-c`) and fetches first (`-f`);
@@ -87,6 +109,13 @@ standupguy --sprint 10              # ...or an N-day window
 standupguy --sprint --since 2026-10-01 --until 2026-10-14   # ...or an exact range
 standupguy --since 2026-10-01       # custom range (--until optional, inclusive)
 standupguy --root ../api --root ../web   # several repos: one section per repo
+standupguy --style ytb              # Yesterday / Today / Blockers by theme, no model
+standupguy --group ticket           # Shipped, grouped by ABC-123
+standupguy --format slack --copy    # Slack mrkdwn, on the clipboard (plain, teams too)
+standupguy --redact strict          # also hide every link and the repo name
+standupguy --redact-term Globex     # hide a customer or code name (repeatable)
+standupguy --no-fold --no-inflight  # every commit; only this branch
+standupguy --agent-sessions         # also count Claude Code sessions here (local, opt-in)
 standupguy --draft                  # LLM prose: Yesterday / Today / Blockers
 standupguy --draft --dry-run        # show the exact prompt and endpoint; send nothing
 standupguy --push-slack --dry-run   # show the exact Slack text; post nothing
@@ -175,6 +204,91 @@ line and exit code 2, never a quiet Monday-to-Friday. `last workday` is also
 a value you can type anywhere a date goes (`--until`, `serve`'s `since=`,
 the MCP tool's `since`). Public holidays are not known: on the Tuesday after
 a holiday Monday, `last workday` is that Monday.
+
+## What changed in 0.3.0
+
+Every claim here is measured by `python bench/bench.py` (committed results:
+`bench/results.json`; the test suite fails if they drift).
+
+| | 0.2.0 | 0.3.0 |
+|---|---|---|
+| Grouping accuracy, 99 hand-labelled subjects (`bench/holdout.tsv`) | 18% | 96% (87% before the misses were looked at and the rules adjusted) |
+| Grouping accuracy, 3,600 generated subjects | 24% | 96% |
+| Ticket / PR / issue extraction on the 99 subjects (precision, recall) | 100%, 27% (merge commits only) | 100%, 100% |
+| ...a naive `[A-Z]+-\d+\|#\d+` regex, same subjects | 41%, 50% | |
+| Noise folded / real work folded by mistake (16 + 12 cases) | 0 / 0 | 16 / 0 |
+| Planted secrets that survive default redaction (120, built at run time) | 120 | 0 |
+| Ordinary strings changed by redaction (41) | 0 | 0 |
+
+How to read the numbers: both corpora were written by the authors of the
+tool. The 99 subjects were labelled by hand before the classifier was
+scored; the first score was 87%, then the misses were read and a few rules
+changed, so 96% is no longer an untouched test. The generated corpus is
+built from templates that match the rules, so it shows regressions, not
+what you will get on your history. The secrets are shapes that the
+redaction patterns know. Run the benchmark on your own commit subjects to
+find out more: the classifier is in `standupguy/themes.py`, about 300 lines.
+
+- **Refs.** `ABC-123` (upper case, 2-10 characters, a stop list for `UTF-8`,
+  `SHA-256`, `CVE-2024-1234`, `GPT-4`...), `#77`, `GH-77`, `closes #77`, a
+  squash `(#412)`, `Merge pull request #55`, Bitbucket `(pull request #7)`,
+  GitLab `See merge request g/p!9` (read from the message body too). Shown as
+  `[ABC-123] [#77] [PR #412]` and in `--format json` as `refs`.
+- **Grouping.** Conventional prefix, gitmoji, the first verb (`Add`, `Fix`,
+  `Bump`...), the branch of a merge commit (`feature/`, `bugfix/`,
+  `dependabot/`), the touched files, and a few phrases. `--group ticket`
+  groups by ticket instead.
+- **Folding.** `fixup!`/`squash!` commits whose target is in the window,
+  bare `wip`/`tmp`/`save`/`.`, "Merge branch 'main' into ...", a revert
+  next to the commit it undoes, and the same subject twice on a day. The line
+  *Folded away: ...* says how many. `--no-fold` lists every commit.
+- **Redaction.** `standard` (the default for text) removes tokens and keys
+  by shape, `password=` style assignments, private keys, long mixed
+  high-entropy strings, URL logins/queries/fragments, internal hosts
+  (`*.corp`, `*.internal`, `localhost`, one-word hosts, private IPs),
+  e-mail addresses and private IPs. `strict` also removes every link and
+  renames repositories `project-1`, `project-2`. `--redact-term` adds your
+  own words. The profile applies to the terminal text, `--copy`,
+  `--push-slack`, the `--draft` prompt, `serve` and `mcp`; `--format json` is
+  exact unless you pass `--redact`. Placeholders look like `{secret}`.
+- **Escaping.** A commit subject cannot become a link (`[x](url)` loses its
+  `(`), an autolink or HTML tag (`<` is escaped), a mention (`@alice` is
+  escaped; `@channel`/`@here`/`@everyone`/`<!here>` become `[at]channel`), or
+  swallow the rest of a line with an unbalanced backtick.
+- **Other work.** Local branches with your commits in the window that HEAD
+  does not have (*pushed* or *local only*), stashes made in the window, other
+  worktrees with uncommitted files, and commits made in the window that no
+  branch or tag reaches any more (a reset or deleted branch: still in the
+  reflog). Names only, never paths. Read-only; no `git fetch`.
+- **Identity.** The log is read with the mailmap (`%aN`/`%aE`), so an old
+  address mapped in `.mailmap` still counts as you.
+- **Agents.** A commit is flagged when a `Co-authored-by:` trailer, the
+  author name (`Name (aider)`) or the footer names Claude, Copilot, Codex,
+  Cursor, Devin, Gemini or Aider. `--agent-sessions` counts Claude Code
+  sessions in this repository from `~/.claude/projects` (or
+  `$CLAUDE_CONFIG_DIR/projects`) and shows the first words of each
+  session's first request, redacted. That transcript format belongs to the
+  tool and is not documented by it: the reader skips what it does not
+  understand and may stop working when the tool changes it.
+- **Formats.** `--format plain|slack|teams` change what is shown or copied;
+  `--push-slack` keeps its own sanitizer (and refuses `--format slack` so
+  one of the two is not silently ignored). `--copy` uses `pbcopy` (macOS),
+  `clip` (Windows; sent as UTF-16 with a byte-order mark - not tested on a real
+  Windows machine), `wl-copy`, `xclip` or `xsel`, or `clip.exe` under WSL, and
+  warns instead of failing when none is found.
+- **`--style ytb`.** Yesterday (or the day name, on a Monday: *Friday*),
+  Today and Blockers with no model: one bullet per ticket, scope or kind;
+  Today lists other branches, stashes, worktrees and uncommitted folders;
+  Blockers lists a commit only when its text says *blocked*, *waiting on*,
+  *workaround*, *todo* and the like, marked "confirm".
+- **JSON.** Each commit has new keys `group`, `refs` and `agent`; the
+  digest has `in_flight`. Nothing was removed or renamed.
+
+Behaviour changes to know about: Markdown output is now redacted and
+escaped by default (`--redact off` restores the old text; `serve` and `mcp`
+redact but do not escape, as their callers sanitize for their own target);
+`(#412)` is no longer part of the line text but a `[PR #412]` tag; the Shipped
+list is shorter when it had fixup/WIP noise, and says so.
 
 ## Activepieces
 
@@ -502,7 +616,11 @@ console), closed pipes (real processes, and Linux stand-ins for Windows'
 errno-22 version of the error), the package metadata, a missing `git`,
 the cp1252 console path, a check that no source or doc file hides an
 invisible character, and a check that nothing in the package or the suite
-needs more than Python 3.10. It also covers what a redirect or an error
+needs more than Python 3.10. 0.3.0 adds tests for the references, grouping and
+folding, redaction (including a megabyte of hostile text), the escaping, other
+branches/stashes/worktrees/lost commits, agent flags and transcripts, the output
+formats and the clipboard (a fake tool on `PATH`), and the committed
+benchmark. It also covers what a redirect or an error
 message may reveal (the API key, the Slack webhook), which date labels a
 commit, the `--format json` refusals, folders git refuses and bare
 repositories, a closed standard output, and the sdist and the wheel built
@@ -531,8 +649,23 @@ or later) already installed - they work offline and download nothing.
   the same way anyone can set their author e-mail to yours: the digest
   shows what the history says, it does not verify identities (nor does
   `git log --author`).
+- **Redaction is pattern matching.** It finds the shapes of known tokens, of
+  `password=...` assignments, of internal-looking hosts, and long mixed
+  strings; it cannot know that a plain word is a customer's name (use
+  `--redact-term`) or that a short random value is a secret. A URL longer
+  than 2,000 characters is only partly looked at as a URL. Read what you are
+  about to paste; `--dry-run` shows what `--draft` and `--push-slack` send.
+- **Refs.** Lower-case keys (`proj-10`) are not recognised, on purpose: they
+  are also `utf-8`. A key the stop list names is skipped.
+- **Grouping is a heuristic.** On the 99 hand-labelled subjects the misses
+  were things like `WIP login form`, `Handle ISO-8601 durations` and
+  `Improve search ranking`. A bare `fix`, `update` or `misc` commit is
+  folded away as noise (and counted); a one-word `fix` is not work you can
+  report.
+- **Other branches** are the local ones; remote-only branches and other
+  people's work are not listed, and nothing is fetched.
 - **Not built in:** scanning a folder tree for repos, per-commit diff-stats,
-  clipboard copy, templates. See *How it compares* for tools that have them.
+  GitHub/Jira lookups. See *How it compares* for tools that have them.
 
 ## License
 

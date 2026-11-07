@@ -72,6 +72,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote_plus
 
 from . import digest as digest_mod
+from . import inflight as inflight_mod
 from . import gitlog as gitlog_mod
 from . import push as push_mod
 from . import stdio as stdio_mod
@@ -326,16 +327,21 @@ def _payload(roots: list, query: dict, weekly: bool) -> tuple[int, str, str]:
         # git runs ONCE per repo per request; markdown and JSON share the facts
         commits = gitlog_mod.commits_since(root, since, author, until)
         in_progress = gitlog_mod.uncommitted(root)
+        found = [] if weekly else inflight_mod.find(root, since, until,
+                                                    author)
         if weekly:
             md = digest_mod.weekly_markdown(root, author, since, until,
-                                            commits=commits)
+                                            commits=commits,
+                                            opts=digest_mod.raw_options())
         else:
             md = digest_mod.digest_markdown(root, since, label, author, until,
                                             commits=commits,
-                                            in_progress=in_progress)
+                                            in_progress=in_progress,
+                                            opts=digest_mod.raw_options(),
+                                            in_flight=found)
         sections.append(md)
         repos.append(digest_mod.to_json(root, label, since, until, commits,
-                                        in_progress))
+                                        in_progress, in_flight=found))
     md = "\n".join(sections)
     if fmt == "markdown":
         return 200, "text/markdown; charset=utf-8", md

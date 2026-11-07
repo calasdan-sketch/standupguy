@@ -23,6 +23,10 @@ class Commit:
     # the people named in Co-authored-by: trailers ("Name <email>"), as
     # written by whoever made the commit
     coauthors: list[str] = dataclasses.field(default_factory=list)
+    # the message body (everything after the subject), cut at MAX_BODY_CHARS.
+    # Read only to find ticket and pull-request numbers and agent footers;
+    # it is never printed.
+    body: str = ""
 
 
 class GitNotFound(RuntimeError):
@@ -456,7 +460,32 @@ def _log_format(token: str = "") -> str:
     rs, us, gs = "%x1e" + token, "%x1f" + token, "%x1d" + token
     trailers = ("%(trailers:key=Co-authored-by,valueonly,unfold,"
                 f"separator={gs})")
-    return f"--pretty=format:{rs}%H{us}%an{us}%ae{us}%cd{us}%s{us}{trailers}"
+    return f"--pretty=format:{rs}%H{us}%aN{us}%aE{us}%cd{us}%s{us}{trailers}"
+
+
+#: Longest message body kept per commit (characters).
+MAX_BODY_CHARS = 4000
+
+
+def _bodies(root: str, window: list, token: str) -> dict:
+    """sha -> message body for the commits of the window. A second, small
+    `git log` (a body has line breaks of its own, which the main record
+    cannot carry). Bodies are optional: if git fails, there are none."""
+    rs, us = "\x1e" + token, "\x1f" + token
+    try:
+        out = _git(root, "log", "-z", *window, f"--format={rs}%H{us}%b",
+                   "HEAD")
+    except (GitNotFound, GitTimeout):
+        raise
+    except RuntimeError:
+        return {}
+    bodies = {}
+    for record in out.split(rs):
+        sha, sep, body = record.partition(us)
+        sha = sha.strip("\0\n")
+        if sep and _SHA_RE.fullmatch(sha):
+            bodies[sha] = body.strip("\0")[:MAX_BODY_CHARS]
+    return bodies
 
 
 #: At most this many co-authors are kept per commit, each cut at
@@ -537,6 +566,10 @@ def commits_since(root: str, since: str, author: str | None = None,
             return []
         raise
     commits = [c for c in parse_log(out, token) if c.sha in real]
+    if commits:
+        bodies = _bodies(root, window, token)
+        for c in commits:
+            c.body = bodies.get(c.sha, "")
     if author:
         commits = [c for c in commits if author_matches(c, author)]
     return commits

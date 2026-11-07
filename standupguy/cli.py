@@ -25,13 +25,16 @@ import sys
 
 from . import digest as digest_mod
 from . import draft as draft_mod
+from . import formats as formats_mod
 from . import gitlog as gitlog_mod
+from . import inflight as inflight_mod
 from . import mcp as mcp_mod
 from . import push as push_mod
+from . import redact as redact_mod
 from . import serve as serve_mod
 from . import stdio as stdio_mod
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 
 def _harden_streams() -> None:
@@ -112,25 +115,40 @@ def _check_dates(args) -> bool:
     return True
 
 
-def _repo_digest(args, root: str) -> tuple[str, dict]:
+def _options(args) -> digest_mod.Options:
+    profile = args.redact or (os.environ.get("STANDUPGUY_REDACT") or "").strip() \
+        or redact_mod.DEFAULT_PROFILE
+    return digest_mod.Options(
+        redactor=redact_mod.make(profile, args.redact_term or ()),
+        group=args.group, fold=not args.no_fold,
+        inflight=not args.no_inflight, style=args.style,
+        agent_sessions=args.agent_sessions)
+
+
+def _repo_digest(args, root: str, opts=None) -> tuple[str, dict]:
     """(markdown, json payload) for one repo — git runs once per repo."""
+    opts = opts or _options(args)
     author = _resolve_author(args, root)
     since, until, label = _window(args)
     commits = gitlog_mod.commits_since(root, since, author, until)
     in_progress = gitlog_mod.uncommitted(root)
+    found = inflight_mod.find(root, since, until, author) \
+        if opts.inflight and not args.week else []
     if args.sprint is not None:
         md = digest_mod.sprint_markdown(root, since, until, author,
                                         commits=commits,
-                                        in_progress=in_progress)
+                                        in_progress=in_progress, opts=opts,
+                                        in_flight=found)
     elif args.week:
         md = digest_mod.weekly_markdown(root, author, since, until,
-                                        commits=commits)
+                                        commits=commits, opts=opts)
     else:
         md = digest_mod.digest_markdown(root, since, label, author, until,
                                         commits=commits,
-                                        in_progress=in_progress)
+                                        in_progress=in_progress, opts=opts,
+                                        in_flight=found)
     return md, digest_mod.to_json(root, label, since, until, commits,
-                                  in_progress)
+                                  in_progress, in_flight=found)
 
 
 def _show(text: str) -> None:
@@ -140,10 +158,43 @@ def _show(text: str) -> None:
     stdio_mod.stdout().write(stdio_mod.printable(text))
 
 
+def _redact_payload(payload: dict, redactor) -> dict:
+    """`payload` with its text fields run through the redaction profile (only
+    when --redact was given with --format json)."""
+    r = redactor.text
+    payload = dict(payload)
+    payload["repo"] = redactor.repo(payload["repo"])
+    payload["in_progress"] = [r(p) for p in payload["in_progress"]]
+    payload["commits"] = [dict(c, subject=r(c["subject"]),
+                               files=[r(f) for f in c["files"]],
+                               email=r(c["email"]),
+                               coauthors=[r(a) for a in c["coauthors"]])
+                          for c in payload["commits"]]
+    for item in payload.get("in_flight", []):
+        item["subject"], item["name"] = r(item["subject"]), r(item["name"])
+    return payload
+
+
+def _emit(args, text: str) -> None:
+    """Show `text`; copy it too when asked."""
+    _show(text)
+    if args.copy:
+        try:
+            # the clipboard gets the same visible escapes the terminal does
+            tool = formats_mod.copy(stdio_mod.printable(text))
+        except formats_mod.ClipboardError as e:
+            print(f"warning: not copied: {e}", file=sys.stderr)
+        else:
+            print(f"copied to the clipboard ({tool})", file=sys.stderr)
+
+
 def cmd_digest(args) -> int:
-    results = [_repo_digest(args, root) for root in args.root]
+    opts = _options(args)
+    results = [_repo_digest(args, root, opts) for root in args.root]
     if args.format == "json":
         payloads = [p for _, p in results]
+        if args.redact is not None:
+            payloads = [_redact_payload(p, opts.redactor) for p in payloads]
         data = payloads[0] if len(payloads) == 1 else {"repos": payloads}
         stdio_mod.stdout().write(json.dumps(data, indent=2) + "\n")
         return 0
@@ -160,7 +211,7 @@ def cmd_digest(args) -> int:
             print("note: showing the plain digest instead"
                   + (" (nothing was posted to Slack)"
                      if args.push_slack is not None else ""), file=sys.stderr)
-            _show(md)
+            _emit(args, formats_mod.convert(md, args.format))
             return 2
     if args.push_slack is not None:
         webhook = args.push_slack if args.push_slack is not True else \
@@ -176,7 +227,7 @@ def cmd_digest(args) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 2
         return 0
-    _show(md)
+    _emit(args, formats_mod.convert(md, args.format))
     return 0
 
 
@@ -254,10 +305,43 @@ def build_parser() -> argparse.ArgumentParser:
                         "'Carried over' section (WIP commits + uncommitted work).")
     p.add_argument("--draft", action="store_true",
                    help="Draft Yesterday/Today/Blockers prose via local model.")
-    p.add_argument("--format", choices=["markdown", "json"],
+    p.add_argument("--format", choices=["markdown", "json", "plain", "slack",
+                                        "teams"],
                    default="markdown",
-                   help="markdown (default) or json. json is the finished "
-                        "output: not with --draft or --push-slack.")
+                   help="markdown (default), plain, slack (mrkdwn), teams, "
+                        "or json. json is the finished output: not with "
+                        "--draft or --push-slack. plain/slack/teams are for "
+                        "what is shown or copied: not with --push-slack.")
+    p.add_argument("--style", choices=["standup", "ytb"], default="standup",
+                   help="standup (default): Shipped by kind. ytb: "
+                        "Yesterday / Today / Blockers by theme, no model.")
+    p.add_argument("--group", choices=["type", "ticket"], default="type",
+                   help="Group Shipped by kind of change (default) or by "
+                        "ticket key (ABC-123).")
+    p.add_argument("--redact", choices=list(redact_mod.PROFILES), default=None,
+                   help="What to hide before text is shown, copied, posted or "
+                        "sent to a model: standard (default: secrets, URL "
+                        "queries and internal links, e-mails, private IPs), "
+                        "strict (also every link and repo names), off. Also "
+                        "STANDUPGUY_REDACT. With --format json, only when "
+                        "given.")
+    p.add_argument("--redact-term", action="append", default=None,
+                   metavar="WORD",
+                   help="Also hide this word (a customer, a code name); "
+                        "repeatable.")
+    p.add_argument("--no-fold", action="store_true",
+                   help="List every commit: do not fold fixup!/WIP saves, "
+                        "branch syncs, revert pairs and duplicates.")
+    p.add_argument("--no-inflight", action="store_true",
+                   help="Do not look at other branches, stashes and "
+                        "worktrees.")
+    p.add_argument("--agent-sessions", action="store_true",
+                   help="Also count Claude Code sessions run in this repo "
+                        "(reads ~/.claude/projects; local only; off by "
+                        "default).")
+    p.add_argument("--copy", action="store_true",
+                   help="Also copy the text to the clipboard (pbcopy, clip, "
+                        "wl-copy, xclip or xsel).")
     p.add_argument("--push-slack", nargs="?", const=True, default=None,
                    metavar="WEBHOOK_URL",
                    help="POST the notes to a Slack webhook; a bare "
@@ -337,6 +421,7 @@ _TEXT_OPTIONS = (
 )
 
 
+
 def _check_values(args) -> bool:
     """An option given an empty value (`--push-slack "$HOOK"` with $HOOK
     never set) is a mistake, not a request for the default: say so (False,
@@ -355,6 +440,37 @@ def _check_values(args) -> bool:
                   f"the variable it came from set? ({way_out})",
                   file=sys.stderr)
             return False
+    return True
+
+
+def _check_format_flags(args) -> bool:
+    """plain/slack/teams change what is shown or copied; --push-slack posts
+    its own sanitized Markdown, so the two together would silently ignore
+    one of them. --copy needs something to copy."""
+    if args.cmd is not None:
+        return True
+    if args.format in ("plain", "slack", "teams") \
+            and args.push_slack is not None:
+        print(f"error: --format {args.format} changes what is shown or "
+              "copied; --push-slack posts its own sanitized text. Drop one.",
+              file=sys.stderr)
+        return False
+    if args.copy and args.format == "json":
+        print("error: --copy copies text; --format json is printed as it "
+              "is. Redirect it to a file instead.", file=sys.stderr)
+        return False
+    return True
+
+
+def _check_redact_env(args) -> bool:
+    """STANDUPGUY_REDACT must name a profile: a typo ("strcit") must not
+    quietly leave the text less hidden than asked."""
+    value = (os.environ.get("STANDUPGUY_REDACT") or "").strip()
+    if args.redact is None and value and value not in redact_mod.PROFILES:
+        print(stdio_mod.printable(
+            f"error: STANDUPGUY_REDACT is {value[:40]!r}; expected one of "
+            f"{', '.join(redact_mod.PROFILES)}"), file=sys.stderr)
+        return False
     return True
 
 
@@ -437,11 +553,11 @@ def main(argv=None) -> int:
 def _main(argv=None) -> int:
     _harden_streams()
     args = build_parser().parse_args(argv)
-    if not _check_values(args):
+    if not _check_values(args) or not _check_redact_env(args):
         return 2
     args.root = args.root or [os.getcwd()]
-    if not _check_output_flags(args) or not _check_dry_run(args) \
-            or not _check_workdays(args):
+    if not _check_output_flags(args) or not _check_format_flags(args) \
+            or not _check_dry_run(args) or not _check_workdays(args):
         return 2
     try:
         if not _check_roots(args.root):     # mcp, serve and the digest alike

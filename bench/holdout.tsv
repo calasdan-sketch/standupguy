@@ -1,0 +1,100 @@
+# group<TAB>subject<TAB>tickets<TAB>prs<TAB>issues  (hand-labelled before the classifier was scored)
+feat	Add dark mode toggle to settings page			
+feat	Implement CSV export for reports (#1204)		1204	
+feat	feat: support multiple webhooks per project			
+feat	Introduce retry with exponential backoff			
+feat	ENG-4412 Add rate limiting to public API	ENG-4412		
+feat	[PLAT-88] Allow custom domains on free plan	PLAT-88		
+feat	Create onboarding checklist component			
+feat	Enable SSO for enterprise accounts (#771)		771	
+feat	Merge pull request #310 from acme/feature/search-filters		310	
+feat	Merge pull request #311 from acme/feat/oauth-login		311	
+feat	Expose health endpoint at /healthz			
+feat	Add pagination to the users list. Closes #98			98
+feat	:sparkles: new invoice preview			
+feat	Provide a way to skip the welcome email			
+fix	Fix crash when the config file is empty			
+fix	Fix off-by-one in page counter (#2231)		2231	
+fix	fix(auth): token refresh loop on 401			
+fix	Resolve race condition in job scheduler			
+fix	Correct timezone handling for recurring events			
+fix	BUG-221 Prevent duplicate emails on retry	BUG-221		
+fix	Hotfix: null deref in checkout			
+fix	Handle missing avatar gracefully			
+fix	Merge pull request #402 from acme/bugfix/login-redirect		402	
+fix	Merge pull request #403 from acme/hotfix/payments		403	
+fix	Fixes #512: wrong total in invoice			512
+fix	Avoid deadlock when two uploads finish together			
+fix	:bug: stop leaking file handles			
+fix	Patch XSS in comment renderer			
+fix	Repair broken pagination links			
+refactor	Refactor billing service into smaller modules			
+refactor	Extract validation logic into its own package			
+refactor	Rename UserRecord to Account			
+refactor	Simplify the retry loop			
+refactor	Move config loading out of main			
+refactor	Restructure the test fixtures			
+refactor	refactor(core): drop legacy adapter			
+refactor	Clean up unused imports			
+refactor	Rework session storage			
+refactor	Split the monolithic router (#88)		88	
+refactor	Inline the helper that is used once			
+refactor	Merge pull request #500 from acme/refactor/db-layer		500	
+docs	Update README with install steps			
+docs	docs: explain the plugin API			
+docs	Document the --dry-run flag			
+docs	Fix typo in CONTRIBUTING			
+docs	Add changelog entry for 2.3			
+docs	Update CHANGELOG.md			
+docs	Add architecture diagram to docs/			
+docs	Merge pull request #77 from acme/docs/api-guide		77	
+docs	[skip ci] Update docs			
+docs	Mention @alice in the docs			
+test	Add tests for the parser			
+test	test: cover empty input in tokenizer			
+test	Increase coverage of auth module			
+test	Fix flaky test in scheduler spec			
+test	Mock the payment gateway in integration tests			
+test	Add regression test for #231			231
+test	Tests for pagination (#640)		640	
+chore	Bump lodash from 4.17.20 to 4.17.21			
+chore	chore: update dependencies			
+chore	Upgrade to Node 20			
+chore	Release 2.4.0			
+chore	Update dependencies (#901)		901	
+chore	Configure Prettier			
+chore	ci: cache pip downloads			
+chore	Pin actions to commit SHAs			
+chore	Remove unused dev dependency			
+chore	Bump version to 1.8.2			
+chore	Add .gitignore for editor files			
+chore	Lint fixes			
+chore	Update lockfile			
+chore	build: switch to esbuild			
+chore	Merge pull request #12 from dependabot/npm_and_yarn/lodash-4.17.21		12	
+chore	Revert "Add dark mode toggle"			
+chore	Bump GPT-4 prompt template			
+other	Update			
+other	Changes for the demo			
+other	Merge branch 'main' of github.com:acme/app			
+other	Initial commit			
+other	Final touches before the release			
+other	Address review comments			
+other	Work on the importer			
+other	More tweaks			
+other	Merge pull request #44 from acme/ENG-901-new-nav	ENG-901	44	
+other	Follow-up to #301 (see also #302)			301,302
+feat	WIP login form			
+feat	Support UTF-8 filenames			
+feat	Add HTTP-2 support			
+feat	Add support for TLS-1.3			
+feat	Handle ISO-8601 durations			
+feat	Improve search ranking (#1500)		1500	
+feat	Add Slack notifications for failed jobs [OPS-7]	OPS-7		
+feat	feat(PAY-310): add Apple Pay	PAY-310		
+fix	PROJ-12, PROJ-15: batch import fix	PROJ-12,PROJ-15		
+fix	Closes #14 and fixes #15 in one go			14,15
+fix	Patch CVE-2024-12345 in the parser			
+fix	Fix X-Forwarded-For parsing			
+refactor	Switch hashing to SHA-256			
+other	Use color #fff for the header			

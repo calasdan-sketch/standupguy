@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.3.0 - unreleased
+
+Measured by `python bench/bench.py` (see the README, *What changed in 0.3.0*).
+
+### Added
+- **References.** `ABC-123`, `#77`, `GH-77`, `closes #77`, squash `(#412)`,
+  merge and Bitbucket/GitLab pull and merge requests, from the subject and the
+  body, shown as `[ABC-123] [#77] [PR #412]`. `--group ticket`. JSON: `refs`.
+- **Grouping by what a commit did**, not only by `feat:`: first verb,
+  gitmoji, merge-branch names, touched files. JSON: `group`.
+- **Folding** of `fixup!`/`squash!`, bare WIP saves, branch syncs, revert
+  pairs and same-day duplicates, with a counted *Folded away* line.
+  `--no-fold`.
+- **Redaction** (`--redact off|standard|strict`, `--redact-term`,
+  `STANDUPGUY_REDACT`): secrets, URL queries, internal hosts, e-mails,
+  private IPs; `strict` also links and repo names. Default `standard`.
+- **Markdown escaping** of links, autolinks/HTML, mentions and unbalanced
+  backticks; mass mentions become `[at]channel`.
+- **Other work**: other branches (pushed or local only), stashes, worktrees,
+  commits only the reflog holds. `--no-inflight`. JSON: `in_flight`.
+- **Mailmap**: the log uses `%aN`/`%aE`.
+- **Agents**: commits made with Claude, Copilot, Codex, Cursor, Devin, Gemini
+  or Aider are flagged; `--agent-sessions` (opt-in) counts local Claude Code
+  sessions. JSON: `agent`.
+- `--format plain|slack|teams`, `--copy`, `--style ytb`.
+- `bench/`: the benchmark, its hand-labelled subjects and committed results.
+
+### Changed
+- Markdown output is redacted and escaped by default (`--redact off` for the
+  old text). `serve` and `mcp` redact but do not escape.
+- `(#412)` at the end of a subject is a `[PR #412]` tag, not line text.
+- Version `0.3.0`.
+
+### Security
+- A misspelt `STANDUPGUY_REDACT` is an error (exit 2), never a quiet fall-back.
+- `--copy` puts the same visible escapes on the clipboard as on the terminal.
+- Every redaction pattern is bounded; a one-megabyte subject of one repeated
+  character takes about a tenth of a second (an early draft took 30 seconds).
+- Folding is linear in the number of commits.
+
 ## 0.2.0 - unreleased
 
 ### Changed

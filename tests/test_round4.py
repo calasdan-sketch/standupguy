@@ -459,7 +459,8 @@ class TestServeShape(unittest.TestCase):
         for c in data["commits"]:
             self.assertEqual(set(c), {"sha", "author", "email", "date",
                                       "subject", "files", "pr", "wip",
-                                      "coauthors"})
+                                      "coauthors", "group", "refs",
+                                      "agent"})
         self.assertIn("markdown", data)
         code, out, _ = run_cli("--root", self.root, "--all", "--since",
                                "2026-10-01", "--format", "json")

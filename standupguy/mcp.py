@@ -27,7 +27,7 @@ from . import digest as digest_mod
 from . import gitlog as gitlog_mod
 from . import stdio as stdio_mod
 
-SERVER_INFO = {"name": "standupguy", "version": "0.2.0"}
+SERVER_INFO = {"name": "standupguy", "version": "0.3.0"}
 
 TOOL_NAME = "what_did_i_ship"
 
@@ -136,7 +136,8 @@ def _call_tool(args: dict, roots: list[str]) -> dict:
                 author = args.get("author") or \
                     gitlog_mod.default_author(root) or None
             sections.append(digest_mod.digest_markdown(
-                root, since, label, author, until))
+                root, since, label, author, until,
+                opts=digest_mod.raw_options()))
     except Exception as e:
         return _tool_result(json.dumps({"error": str(e)}), is_error=True)
     return _tool_result("\n".join(sections))
