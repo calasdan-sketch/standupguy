@@ -38,7 +38,10 @@ fixup/WIP noise folded (and counted), secrets and internal links redacted
 before anything is shown, copied, posted or sent to a model, work on other
 branches, stashes and worktrees included, agent-assisted commits flagged,
 `--format plain|slack|teams`, `--copy`, and a Yesterday / Today / Blockers
-style that needs no model.
+style that needs no model. Also in this release: `--scan DIR` (every repo
+under a folder), `--stat` (lines added and removed), `--holidays` (days off
+for "last workday"), and git calls that cannot be made to run a command by
+the repository they read (*Reading a repository you did not write*).
 
 ## How it compares
 
@@ -51,7 +54,9 @@ page does not mention it.
 | Runs | on your computer | on your computer | on your computer | on your computer | on your computer | hosted SaaS |
 | Monday covers Friday | yes (`--workdays`) | yes (`-w`) | — | via `--since` | — | n/a |
 | Co-authored-by counts as yours | yes | no ([open issue #129](https://github.com/kamranahmedse/git-standup/issues/129)) | — | — | — | n/a |
-| Several repos | `--root` (repeat) | scans folders (`-m` depth) | yes | yes | — | n/a |
+| Several repos | `--root` (repeat), `--scan DIR` finds repos under a folder | scans folders (`-m` depth) | yes (takes directories to scan) | yes | — | n/a |
+| Lines added / removed per commit | `--stat` | per-commit diff-stat (`-c`) | — | — | — | n/a |
+| Safe to point at a repo you did not write (no repo-config command runs) | yes (fsmonitor, signature and colour settings forced off) | — | — | — | — | n/a |
 | LLM prose | any OpenAI-compatible endpoint, Ollama by default | no | Claude, OpenAI, Ollama | Ollama, Anthropic, OpenAI | local LLM | Geekbot AI (paid plan) |
 | See the prompt before sending | `--dry-run` | n/a | — | `--dry-run` | `--dry-run` | n/a |
 | Slack | webhook, mentions and markup escaped | no | Slack-formatted output | planned | — | native |
@@ -72,9 +77,16 @@ mention it. For git-standup, "—"/"no" is from its README as quoted in the
 earlier rows; this environment could not fetch that repository again, so the
 new rows are **unverified** for it.
 
-What the others do better: git-standup scans a folder tree for repos by
-itself, can show a diff-stat per commit (`-c`) and fetches first (`-f`);
-standup-ai and dawnlog ship several output styles and templates, and
+The `--scan` and `--stat` rows, and the standup-ai "directories to scan"
+entry, were checked in this release against standup-ai's PyPI page (0.2.0,
+unchanged) only. GitHub could not be reached from the build environment, so
+every git-standup and dawnlog entry is from the earlier reading and
+**unverified** for newer versions. The "safe to point at" row is our own
+test (a `core.fsmonitor` command in a repo's config); it was not run against
+the other tools, so they get "—".
+
+What the others do better: git-standup fetches first (`-f`) and its folder
+scan is older and more tested than ours; standup-ai and dawnlog ship several output styles and templates, and
 standup-ai copies to the clipboard; standupbrain also reads GitHub and
 Jira; Geekbot collects what people *say*, not only what they committed.
 
@@ -109,6 +121,9 @@ standupguy --sprint 10              # ...or an N-day window
 standupguy --sprint --since 2026-10-01 --until 2026-10-14   # ...or an exact range
 standupguy --since 2026-10-01       # custom range (--until optional, inclusive)
 standupguy --root ../api --root ../web   # several repos: one section per repo
+standupguy --scan ~/code            # every repo under a folder (2 levels down); quiet ones left out
+standupguy --stat                   # +lines -lines on each commit line
+standupguy --holidays 2026-12-25    # days off: "last workday" skips them
 standupguy --style ytb              # Yesterday / Today / Blockers by theme, no model
 standupguy --group ticket           # Shipped, grouped by ABC-123
 standupguy --format slack --copy    # Slack mrkdwn, on the clipboard (plain, teams too)
@@ -202,8 +217,12 @@ Your week is `--workdays` (or `STANDUPGUY_WORKDAYS`): `mon-fri` by default,
 letters or more, any case. A value that names no weekday is an `error:`
 line and exit code 2, never a quiet Monday-to-Friday. `last workday` is also
 a value you can type anywhere a date goes (`--until`, `serve`'s `since=`,
-the MCP tool's `since`). Public holidays are not known: on the Tuesday after
-a holiday Monday, `last workday` is that Monday.
+the MCP tool's `since`). Public holidays are not known (they differ by
+country and region, and we will not guess): on the Tuesday after a holiday
+Monday, `last workday` is that Monday, unless you list it:
+`--holidays 2026-12-25,2026-12-28` (or `STANDUPGUY_HOLIDAYS`) makes those
+days count like a weekend, so that Tuesday starts on the Friday. A value
+that is not a real date is an `error:` line and exit code 2.
 
 ## What changed in 0.3.0
 
@@ -219,6 +238,11 @@ Every claim here is measured by `python bench/bench.py` (committed results:
 | Noise folded / real work folded by mistake (16 + 12 cases) | 0 / 0 | 16 / 0 |
 | Planted secrets that survive default redaction (120, built at run time) | 120 | 0 |
 | Ordinary strings changed by redaction (41) | 0 | 0 |
+
+Third-round check (same script, `tag_repeats`): of the 12 hand-labelled
+subjects that carry a ticket or issue key, 7 printed it twice
+(`add login [ABC-12] [ABC-12]`) before the third review and none do now;
+the generated corpus shows 610 of 972 before, 0 after.
 
 How to read the numbers: both corpora were written by the authors of the
 tool. The 99 subjects were labelled by hand before the classifier was
@@ -302,8 +326,8 @@ standupguy serve --root /path/to/repo   # localhost:8765
 `--port N` picks another port (default 8765); `--port 0` lets the system
 choose a free one, and the line `serve` prints when it starts says which.
 
-- `GET /digest?since=last%20workday&until=&author=&all=&format=json|markdown`
-- `GET /week?since=&until=&author=&all=&format=json|markdown`
+- `GET /digest?since=last%20workday&until=&author=&all=&format=json|markdown&redact=`
+- `GET /week?since=&until=&author=&all=&format=json|markdown&redact=`
 - `GET /health`
 
 Defaults are the CLI's: `author` is the repo's `git config user.email`
@@ -329,6 +353,13 @@ Each repo's default `author` is its own `git config user.email`. A port
 that is already in use, a `--root` that is not a git repo, or a network
 address without a token (below), is a one-line `error:` and exit code 2;
 the server does not start.
+
+**The JSON `commits` are exact by default**: a subject that holds a token
+or an address is in them as written (the `markdown` and `slack_text` next to
+them are redacted). A workflow that forwards subjects, file names or e-mail
+addresses should ask for `&redact=standard` (or `strict`): the commits, the
+Markdown and the Slack text then all follow that profile. Anything else is
+a `400`.
 
 ### Who can reach it
 
@@ -395,6 +426,25 @@ weekday 9am Schedule trigger → HTTP Request → Branch (skip quiet days) →
 Slack. Connect your Slack connection, set the channel, done. The same
 `serve` endpoints work from n8n's HTTP Request node too — nothing in the
 bridge is platform-specific.
+
+## Reading a repository you did not write
+
+Every `git` call standupguy makes forces a few settings off, because a
+repository's own config can otherwise act: `core.fsmonitor` is a command git
+**runs** on `git status`, and `log.showSignature` runs `gpg.program` for each
+commit. Colour, decoration, output encoding and path quoting are forced too,
+so a user's or a repo's config cannot change the bytes the parser reads.
+`GIT_OPTIONAL_LOCKS=0` keeps `git status` from taking the index lock or
+rewriting the index (a read-only checkout works, and a running editor is
+not disturbed). Content filters (`filter.<name>.clean` / `process`, which
+`git status` runs to compare a file with the index) defined in the
+repository's own config are switched off; the ones in your system or global
+config (git-lfs) stay on. Uncommitted work *inside* a submodule is not
+looked at (a submodule at another commit still shows), because that would
+start git under the submodule's own config. `GIT_DIR`, `GIT_WORK_TREE` and similar variables (set inside
+a git hook) are dropped: `--root` always wins. This closes the config paths
+we know of; it is not a sandbox. Git itself still reads the repository's
+objects and `.mailmap`, and hooks are never run.
 
 ## How it works
 
@@ -644,7 +694,7 @@ or later) already installed - they work offline and download nothing.
   CI workflow (`.github/workflows/ci.yml`) also runs the suite on Windows
   and macOS.
 - **Last workday.** Weekends come from `--workdays`; public holidays are not
-  known.
+  known unless you list them with `--holidays`.
 - **Co-authors.** Anyone can write a `Co-authored-by:` trailer naming you,
   the same way anyone can set their author e-mail to yours: the digest
   shows what the history says, it does not verify identities (nor does
@@ -664,8 +714,21 @@ or later) already installed - they work offline and download nothing.
   report.
 - **Other branches** are the local ones; remote-only branches and other
   people's work are not listed, and nothing is fetched.
-- **Not built in:** scanning a folder tree for repos, per-commit diff-stats,
-  GitHub/Jira lookups. See *How it compares* for tools that have them.
+- **`--scan`** looks `--scan-depth` folders down (default 2, at most 6),
+  never follows a symbolic link, skips `node_modules`, `.venv`, `vendor`,
+  `build` and similar folders, ignores bare repositories, and refuses
+  (instead of listing part of them) a tree with more than 100 repositories
+  or 20,000 folders. A repository git will not open (owned by another user)
+  is skipped with a warning. It hides repos with nothing to report; give a
+  repo as `--root` as well if you want to be told it was quiet. Not tested
+  on Windows or on network drives.
+- **`--stat`** counts lines with `git log --numstat`; renames are not
+  followed (a moved file is a delete and an add) and binary files count for
+  neither number. On a line that folds several commits (`(x2)`) the numbers
+  are left out.
+- **Long text.** A digest line shows at most 300 characters of a commit
+  subject or file name (after redaction); `--format json` keeps all of it.
+- **Not built in:** GitHub/Jira lookups, fetching remote branches, See *How it compares* for tools that have them.
 
 ## License
 

@@ -334,8 +334,18 @@ def times_out_on(*subcommands):
     the timeout, every other command runs for real."""
     real_run = subprocess.run
 
+    def subcommand(cmd):
+        # git [-c key=value]... -C <root> <command>: the forced settings
+        # (gitlog.SAFE_CONFIG) come first
+        args = iter(cmd[1:])
+        for a in args:
+            if a in ("-c", "-C"):
+                next(args, None)
+            else:
+                return a
+
     def run(cmd, *args, **kwargs):
-        if cmd[0] == "git" and cmd[3] in subcommands:   # git -C <root> <command>
+        if cmd[0] == "git" and subcommand(cmd) in subcommands:
             raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
         return real_run(cmd, *args, **kwargs)
 
@@ -412,7 +422,7 @@ class TestAGitThatDoesNotAnswer(unittest.TestCase):
         real_run = subprocess.run
 
         def second_one_hangs(cmd, *args, **kwargs):
-            if cmd[0] == "git" and cmd[3:5] == ["rev-parse", "--git-dir"]:
+            if cmd[0] == "git" and cmd[-2:] == ["rev-parse", "--git-dir"]:
                 raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
             return real_run(cmd, *args, **kwargs)
 

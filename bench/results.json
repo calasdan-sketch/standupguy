@@ -69,5 +69,17 @@
         "recall": 0.5
       }
     }
+  },
+  "tag_repeats": {
+    "generated": {
+      "lines_with_a_ticket_or_issue": 972,
+      "repeat_after": 0,
+      "repeat_before": 610
+    },
+    "holdout": {
+      "lines_with_a_ticket_or_issue": 12,
+      "repeat_after": 0,
+      "repeat_before": 7
+    }
   }
 }

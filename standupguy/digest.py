@@ -83,7 +83,8 @@ class Options:
     that could act in a chat escaped, other branches and stashes listed."""
 
     def __init__(self, redactor=None, group="type", fold=True, escape=True,
-                 inflight=True, style="standup", agent_sessions=False):
+                 inflight=True, style="standup", agent_sessions=False,
+                 stat=False):
         self.redactor = redactor or redact_mod.make()
         self.group = group              # "type" or "ticket"
         self.fold = fold
@@ -91,6 +92,7 @@ class Options:
         self.inflight = inflight
         self.style = style              # "standup" or "ytb"
         self.agent_sessions = agent_sessions
+        self.stat = stat                # show lines added / removed
 
 
 DEFAULT_OPTIONS = Options()
@@ -123,11 +125,25 @@ def md_escape(text: str) -> str:
     return out
 
 
+#: A digest line shows at most this many characters of one commit subject,
+#: file name or label; the JSON keeps the whole text. (A pasted log, a
+#: minified file or a hostile commit can be a megabyte long.)
+MAX_LINE_CHARS = 300
+
+
 def _t(opts: Options, text) -> str:
     """Untrusted text as one safe line: line breaks shown as \\n, redacted,
-    Markdown-escaped."""
+    cut at MAX_LINE_CHARS, Markdown-escaped. The cut comes AFTER redaction,
+    so a secret is never cut in half and left partly visible."""
     t = opts.redactor.text(one_line(text))
+    if len(t) > MAX_LINE_CHARS:
+        t = t[:MAX_LINE_CHARS].rstrip() + "…"
     return md_escape(t) if opts.escape else t
+
+
+def _msg(opts: Options, text) -> str:
+    """A commit's text as a safe line; `(no message)` when it has none."""
+    return _t(opts, text) if str(text).strip() else "(no message)"
 
 
 def _commit_line(c: gitlog_mod.Commit, opts: Options | None = None,
@@ -144,7 +160,10 @@ def _item_line(item, opts: Options) -> str:
     c = item.commit
     n = len(c.files)
     files = f" ({n} file{'' if n == 1 else 's'})" if n else ""
-    tags = refs_mod.tags(item.refs)
+    if opts.stat and c.added is not None and item.count == 1:
+        files = (f" ({n} file{'' if n == 1 else 's'}, +{c.added} "
+                 f"-{c.deleted})")
+    tags = refs_mod.tags(item.refs, item.text)
     tags = f" {tags}" if tags else ""
     # an old-style merge number the log parser found but the text did not
     if c.pr_number and c.pr_number not in item.refs.prs:
@@ -152,7 +171,8 @@ def _item_line(item, opts: Options) -> str:
     agent = agents_mod.agent_of(c)
     agent = f" _(with {agent})_" if agent else ""
     times = f" (x{item.count})" if item.count > 1 else ""
-    return (f"- {_t(opts, item.text)}{tags}{agent}{times}{files} "
+    text = _msg(opts, item.text)
+    return (f"- {text}{tags}{agent}{times}{files} "
             f"`{c.sha[:7]}`")
 
 
@@ -178,12 +198,35 @@ def commit_dict(c: gitlog_mod.Commit) -> dict:
             "coauthors": list(c.coauthors),
             "group": themes_mod.classify_smart(c.subject, c.files, c.body),
             "refs": refs_dict(refs_mod.extract(c.subject, c.body)),
-            "agent": agents_mod.agent_of(c)}
+            "agent": agents_mod.agent_of(c),
+            **({"added": c.added, "deleted": c.deleted}
+               if c.added is not None else {})}
 
 
 def refs_dict(r) -> dict:
     return {"tickets": list(r.tickets), "issues": list(r.issues),
             "prs": list(r.prs), "closes": list(r.closes)}
+
+
+def redact_payload(payload: dict, redactor) -> dict:
+    """`payload` (from to_json) with its text fields run through the
+    redaction profile: subjects, file names, e-mail addresses, co-authors,
+    the repo name, in-flight names. Used by `--format json --redact` and by
+    `serve` when a request says `redact=`."""
+    r = redactor.text
+    payload = dict(payload)
+    payload["repo"] = redactor.repo(payload["repo"])
+    payload["in_progress"] = [r(p) for p in payload["in_progress"]]
+    payload["commits"] = [dict(c, subject=r(c["subject"]),
+                               files=[r(f) for f in c["files"]],
+                               email=r(c["email"]),
+                               coauthors=[r(a) for a in c["coauthors"]])
+                          for c in payload["commits"]]
+    if "in_flight" in payload:
+        payload["in_flight"] = [dict(i, subject=r(i["subject"]),
+                                     name=r(i["name"]))
+                                for i in payload["in_flight"]]
+    return payload
 
 
 def to_json(root: str, label: str, since: str, until: str | None,
@@ -457,7 +500,7 @@ def _theme_bullets(items, opts: Options) -> list[str]:
     for (_, label), members in sorted(buckets.items(), key=lambda kv: kv[0][0]):
         texts, seen = [], set()
         for m in members:
-            t = _t(opts, m.text)
+            t = _msg(opts, m.text)
             if t.lower() not in seen:
                 seen.add(t.lower())
                 texts.append(t)
@@ -519,12 +562,12 @@ def ytb_markdown(root, since, label, commits, in_progress, found,
                          f"{_t(opts, f.subject)}")
     today += _dir_summary(in_progress, opts)
     wip = [it for it in folded.items if is_wip(it.commit.subject)]
-    today += [f"- finish: {_t(opts, it.text)}" for it in wip[:3]]
+    today += [f"- finish: {_msg(opts, it.text)}" for it in wip[:3]]
     lines += today or ["- _fill in yours_"]
     lines += ["", "## Blockers"]
     hints = [it for it in folded.items if _BLOCKER_RE.search(it.commit.subject)]
     if hints:
-        lines += [f"- possibly: {_t(opts, it.text)} _(from a commit message;"
+        lines += [f"- possibly: {_msg(opts, it.text)} _(from a commit message;"
                   f" confirm)_" for it in hints[:3]]
     else:
         lines.append("_none reported — fill in yours_")

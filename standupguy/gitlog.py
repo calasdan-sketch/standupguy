@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import subprocess
+import sys
 import unicodedata
 
 
@@ -27,6 +28,10 @@ class Commit:
     # Read only to find ticket and pull-request numbers and agent footers;
     # it is never printed.
     body: str = ""
+    # lines added / removed (`--stat`); None when not asked for. A binary
+    # file counts for neither.
+    added: int | None = None
+    deleted: int | None = None
 
 
 class GitNotFound(RuntimeError):
@@ -63,16 +68,60 @@ GIT_NOT_FOUND_MESSAGE = (
     "Windows: Git for Windows), then open a new terminal.")
 
 
-def _git(root: str, *args: str, env: dict | None = None) -> str:
-    full_env = dict(os.environ)
-    if env:
-        full_env.update(env)
+#: Settings forced on every git call. A repository (or the user's own
+#: config) can say `core.fsmonitor = <command>`, which git RUNS on
+#: `git status`; `log.showSignature` runs `gpg.program` for every commit and
+#: prints its output into the log; `color.ui = always`, `log.decorate`,
+#: `i18n.logOutputEncoding` and `core.quotePath` change the bytes this module
+#: parses. A digest tool only reads, so none of that may apply to it.
+SAFE_CONFIG = (
+    "core.fsmonitor=false",
+    "core.untrackedCache=false",
+    "core.quotePath=false",
+    "log.showSignature=false",
+    "log.decorate=no",
+    "log.abbrevCommit=false",
+    "log.follow=false",
+    "color.ui=false",
+    "i18n.logOutputEncoding=UTF-8",
+    "core.pager=cat",
+)
+
+#: Variables that make `git -C <root>` talk to some OTHER repository (set,
+#: for example, inside a git hook or `git rebase --exec`), or that point
+#: git at a trace file. The explicit root always wins.
+_DROPPED_ENV = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+    "GIT_PREFIX", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_EXTERNAL_DIFF", "GIT_PAGER",
+    "GIT_TRACE", "GIT_TRACE2", "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF",
+    "GIT_TRACE_PACKET", "GIT_TRACE_SETUP",
+)
+
+
+def _git_env(extra: dict | None = None) -> dict:
+    env = {k: v for k, v in os.environ.items() if k not in _DROPPED_ENV}
+    # `git status` normally refreshes the index and writes it back: a read
+    # of someone's repository must not take its lock or change it.
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_PAGER"] = "cat"
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _git(root: str, *args: str, env: dict | None = None,
+         config: tuple = ()) -> str:
+    full_env = _git_env(env)
+    config = [x for c in (*SAFE_CONFIG, *config) for x in ("-c", c)]
     # git prints UTF-8 (commit messages, author names): decode it by hand,
     # never with the console code page, never dying on a stray byte, and
     # never in text mode — universal newlines would turn a lone CR inside a
     # commit subject into a newline and corrupt the record around it.
     try:
-        p = subprocess.run(["git", "-C", root, *args], capture_output=True,
+        p = subprocess.run(["git", *config, "-C", root, *args], capture_output=True,
                            timeout=GIT_TIMEOUT, env=full_env)
     except FileNotFoundError:
         raise GitNotFound(GIT_NOT_FOUND_MESSAGE) from None
@@ -292,13 +341,49 @@ def set_workdays(days) -> None:
     _workdays = days
 
 
+_holidays: frozenset = frozenset()
+
+
+def parse_holidays(spec: str) -> frozenset:
+    """The days off `spec` names: comma-separated ISO dates
+    (`2026-12-25,2026-12-28`). standupguy knows no public holiday calendar
+    (they differ by country and region): you say which days were not
+    workdays. Raises ValueError for anything that is not a real date."""
+    days = set()
+    for part in (spec or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            # strictly YYYY-MM-DD: Python 3.11+ would also take 20261225
+            # and 2026-W52-5, Python 3.10 would not
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", part):
+                raise ValueError(part)
+            days.add(datetime.date.fromisoformat(part))
+        except ValueError:
+            raise ValueError(f"{part[:40]!r} is not a date like "
+                             "2026-12-25") from None
+        if len(days) > 400:
+            raise ValueError("more than 400 days off")
+    return frozenset(days)
+
+
+def set_holidays(days) -> None:
+    """Days `last_workday` skips even when they fall on a working weekday."""
+    global _holidays
+    _holidays = frozenset(days)
+
+
 def last_workday(today: datetime.date | None = None) -> datetime.date:
     """The most recent working day BEFORE `today` (default: today): Friday
-    on a Monday, a Saturday or a Sunday; yesterday on Tuesday to Friday."""
+    on a Monday, a Saturday or a Sunday; yesterday on Tuesday to Friday.
+    A day listed with --holidays is skipped like a weekend."""
     today = today or _today()
-    for back in range(1, 8):
+    # a working weekday turns up within a week, so within 7 * (days off + 1)
+    # days at most: every day off can push the search back one more week
+    for back in range(1, 7 * (len(_holidays) + 1) + 1):
         day = today - datetime.timedelta(days=back)
-        if day.weekday() in _workdays:
+        if day.weekday() in _workdays and day not in _holidays:
             return day
     raise AssertionError("no working day")     # set_workdays refuses that
 
@@ -488,6 +573,44 @@ def _bodies(root: str, window: list, token: str) -> dict:
     return bodies
 
 
+def _numstat(root: str, window: list, token: str) -> dict:
+    """sha -> (lines added, lines removed) for the commits of the window,
+    from one `git log --numstat`. Renames are not followed (a moved file is
+    a delete and an add), so a move shows as churn rather than hiding it.
+    Optional: if git fails, there are no numbers."""
+    rs = "\x1e" + token
+    try:
+        out = _git(root, "log", *window, "--no-renames", "--numstat",
+                   f"--format={rs}%H", "HEAD")
+    except (GitNotFound, GitTimeout):
+        raise
+    except RuntimeError:
+        return {}
+    stats: dict = {}
+    sha = None
+    for line in out.split("\n"):
+        if line.startswith(rs):
+            sha = line[len(rs):].strip()
+            if _SHA_RE.fullmatch(sha):
+                stats[sha] = [0, 0]
+            else:
+                sha = None
+            continue
+        if sha is None:
+            continue
+        m = _NUMSTAT_RE.match(line)
+        if m:
+            a, d = m.groups()
+            if a != "-":
+                stats[sha][0] += int(a)
+            if d != "-":
+                stats[sha][1] += int(d)
+    return {k: (v[0], v[1]) for k, v in stats.items()}
+
+
+_NUMSTAT_RE = re.compile(r"^(\d+|-)\t(\d+|-)\t")
+
+
 #: At most this many co-authors are kept per commit, each cut at
 #: MAX_COAUTHOR_CHARS: a commit can carry thousands of trailers.
 MAX_COAUTHORS = 20
@@ -540,7 +663,8 @@ def parse_log(out: str, token: str = "") -> list[Commit]:
 
 
 def commits_since(root: str, since: str, author: str | None = None,
-                  until: str | None = None) -> list[Commit]:
+                  until: str | None = None, stat: bool = False
+                  ) -> list[Commit]:
     """since/until: 'yesterday', '7 days ago', '2026-10-01', or git date
     syntax (see _since_to_arg; a bare `until` date is inclusive).
     author: see author_matches."""
@@ -570,9 +694,45 @@ def commits_since(root: str, since: str, author: str | None = None,
         bodies = _bodies(root, window, token)
         for c in commits:
             c.body = bodies.get(c.sha, "")
+        if stat:
+            numbers = _numstat(root, window, token)
+            for c in commits:
+                if c.sha in numbers:
+                    c.added, c.deleted = numbers[c.sha]
     if author:
         commits = [c for c in commits if author_matches(c, author)]
     return commits
+
+
+_FILTER_KEY_RE = re.compile(r"filter\..+\.(clean|smudge|process|required)$",
+                            re.I | re.S)
+
+
+def _repo_filter_overrides(root: str) -> tuple:
+    """`-c` settings that switch off every content filter this repository's
+    OWN config defines. `git status` runs a file's `clean` (or `process`)
+    filter to compare it with the index, and a repository can name any
+    command there: `.gitattributes` says `* filter=x`, `.git/config` says
+    `filter.x.clean = <command>`. Filters from your system or global config
+    (git-lfs, say) are yours and stay on. Needs a git that can say where a
+    setting came from (`--show-scope`, 2.26); without one, or if the list
+    cannot be read, this raises and `uncommitted` reports nothing rather
+    than run a command nobody vetted."""
+    out = _git(root, "config", "--list", "-z", "--show-scope")
+    found = []
+    fields = out.split("\0")
+    # with -z each setting is two fields: its scope, then "key\nvalue"
+    for scope, entry in zip(fields[0::2], fields[1::2]):
+        if scope not in ("local", "worktree"):
+            continue
+        key = entry.partition("\n")[0]
+        m = _FILTER_KEY_RE.fullmatch(key)
+        if not m:
+            continue
+        found.append(key.rsplit(".", 1)[0] + (".required=false"
+                     if m.group(1).lower() == "required"
+                     else "." + m.group(1).lower() + "="))
+    return tuple(dict.fromkeys(found))
 
 
 def uncommitted(root: str) -> list[str]:
@@ -583,7 +743,25 @@ def uncommitted(root: str) -> list[str]:
         return []
     # -z: paths come back raw and NUL-separated — no C-style quoting of
     # non-ASCII ("caf\303\251.py"), spaces or quotes to undo.
-    out = _git(root, "status", "--porcelain", "-z")
+    try:
+        # --ignore-submodules=dirty: still tells a submodule moved to another
+        # commit, but does not start git inside it (its own config could
+        # carry the filters and commands this function is shutting off)
+        out = _git(root, "status", "--porcelain", "-z",
+                   "--ignore-submodules=dirty",
+                   config=_repo_filter_overrides(root))
+    except (GitNotFound, GitTimeout):
+        raise
+    except GitError as e:
+        # status can fail for reasons of its own (a broken index, a git too
+        # old to say where a setting came from): the digest is still worth
+        # having. Say so, once per kind, instead of a traceback or a quiet
+        # empty list.
+        said = " ".join("".join(ch if ch.isprintable() else " "
+                                for ch in e.stderr).split())[:160]
+        print("warning: could not read uncommitted files"
+              + (f" ({said})" if said else ""), file=sys.stderr)
+        return []
     tokens = out.split("\0")
     paths: list[str] = []
     i = 0

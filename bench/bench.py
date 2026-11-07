@@ -301,6 +301,29 @@ def redaction_scores():
             "ordinary_strings": len(clean), "changed_by_mistake": changed}
 
 
+# ---- tags -----------------------------------------------------------------
+
+def tag_repeats(rows):
+    """On how many digest lines does a ticket or issue tag repeat a key the
+    line text already shows (`add login [ABC-1] [ABC-1]`)? Round 2 always
+    appended the tags; round 3 leaves out the ones the text names."""
+    before = after = lines = 0
+    for r in rows:
+        text = themes.clean_subject(r["subject"])
+        found = refs.extract(r["subject"])
+        if not (found.tickets or found.issues):
+            continue
+        lines += 1
+        # round 2: every ticket/issue tag was appended
+        before += any(t in text for t in found.tickets) or \
+            any(f"#{n}" in text for n in found.issues)
+        shown = refs.tags(found, text)
+        after += any(f"[{t}]" in shown for t in found.tickets
+                     if t in text)
+    return {"lines_with_a_ticket_or_issue": lines,
+            "repeat_before": before, "repeat_after": after}
+
+
 # ---- speed ----------------------------------------------------------------
 
 def speed(rows, repeat=5):
@@ -338,6 +361,8 @@ def run():
         },
         "noise_folding": noise_scores(),
         "redaction": redaction_scores(),
+        "tag_repeats": {"holdout": tag_repeats(hold),
+                        "generated": tag_repeats(gen)},
     }
     return result
 

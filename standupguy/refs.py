@@ -95,10 +95,28 @@ def extract(subject: str, body: str = "") -> Refs:
     return Refs(_uniq(tickets), _uniq(issues), _uniq(prs), _uniq(closes))
 
 
-def tags(refs: Refs) -> str:
+def _in_text(text: str, token: str) -> bool:
+    """Is `token` (`ABC-12`, `#77`) already written in `text` as a whole
+    word? Then a tag for it would only repeat what the line says."""
+    if not text or token not in text:
+        return False
+    i = text.find(token)
+    while i != -1:
+        before = text[i - 1] if i else ""
+        after = text[i + len(token)] if i + len(token) < len(text) else ""
+        if not (before.isalnum() or before == "_") \
+                and not (after.isalnum() or after == "_" or
+                         (after == "-" and token[-1].isdigit())):
+            return True
+        i = text.find(token, i + 1)
+    return False
+
+
+def tags(refs: Refs, text: str = "") -> str:
     """Refs as the bracketed tags a digest line shows: `[ABC-123] [#77]
-    [PR #412]`. Empty string when there are none."""
-    parts = [f"[{t}]" for t in refs.tickets]
-    parts += [f"[#{n}]" for n in refs.issues]
+    [PR #412]`. Empty string when there are none. A ticket or issue that
+    the line `text` already names is not tagged a second time."""
+    parts = [f"[{t}]" for t in refs.tickets if not _in_text(text, t)]
+    parts += [f"[#{n}]" for n in refs.issues if not _in_text(text, f"#{n}")]
     parts += [f"[PR #{n}]" for n in refs.prs]
     return " ".join(parts)

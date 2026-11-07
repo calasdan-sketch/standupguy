@@ -4,6 +4,63 @@
 
 Measured by `python bench/bench.py` (see the README, *What changed in 0.3.0*).
 
+### Added (round 3: expert review of the 0.3.0 line)
+- `--scan DIR` (repeatable) and `--scan-depth N`: digest every git repo under
+  a folder; quiet repos are left out. Never follows a symbolic link, skips
+  dependency and build folders, never looks inside a repo, refuses (does not
+  truncate) more than 100 repos or 20,000 folders.
+- `--stat`: lines added/removed on each commit line and in JSON (`added`,
+  `deleted`, only when asked). Binary files count for neither.
+- `--holidays 2026-12-25,...` / `STANDUPGUY_HOLIDAYS`: days "last workday"
+  skips. No holiday calendar is built in. Strict `YYYY-MM-DD`.
+- `serve`: `redact=off|standard|strict` makes the JSON `commits` (subjects,
+  file names, e-mails), the Markdown and the Slack text follow one profile.
+  Default unchanged (JSON exact).
+- `bench/`: `tag_repeats` (lines whose ticket tag repeated the text: 7 of 12
+  on the hand-labelled subjects and 610 of 972 generated ones before, 0 after).
+
+### Security (round 3)
+- Every git call forces off `core.fsmonitor` (a command git RUNS on
+  `git status`: a repo config could execute anything), `log.showSignature`
+  (runs `gpg.program`), colour, decoration, path quoting, output encoding;
+  sets `GIT_OPTIONAL_LOCKS=0` (reading no longer takes the index lock or
+  rewrites the index); drops `GIT_DIR`, `GIT_WORK_TREE` and similar
+  (inside a git hook they made `--root` read the wrong repo).
+- `git status` runs a file's `clean`/`process` filter from the repo's own
+  config. Filters defined in the repo's local/worktree config are switched
+  off (system and global ones, git-lfs, stay). Needs git 2.26 for
+  `--show-scope`; otherwise a warning and no "In progress" list.
+  `--ignore-submodules=dirty` keeps git from starting inside submodules.
+- A failing `git status` (a broken index, say) was a traceback; it is now a
+  one-line warning and the rest of the digest.
+
+### Fixed (round 3)
+- `add login [ABC-12] [ABC-12]`: a ticket or issue the line already names is
+  not tagged again.
+- A one-megabyte commit subject made a one-megabyte line: digest lines are cut
+  at 300 characters, after redaction (a secret is never cut in half). JSON
+  and `serve` JSON stay whole.
+- An empty commit message printed `-  (1 file)`; it reads `(no message)`.
+- Agent detection ran seven regexes three times per commit; a one-pattern
+  pre-check skips the commits that name no agent (about 15% less CPU on
+  20,000 commits).
+- Test helper in `tests/test_round7.py` finds git's sub-command past the
+  forced `-c` settings (the command line shape changed).
+
+### Considered, not built (round 3)
+Scored value / differentiation / effort / risk (H, M, L):
+GitHub or Jira lookups (M/M/H/H: tokens, live services, breaks "offline");
+`git fetch` first (L/L/L/M: network, changes the repo); remote-only branches
+(M/L/M/M: stale without a fetch); config file (M/L/M/L: `tomllib` needs
+Python 3.11, we support 3.10); lower-case ticket keys (L/L/L/H: `utf-8`);
+"since last run" state file (M/M/M/M: hidden state, surprising windows);
+HTML or PDF output (L/L/M/L); per-author sections for `--all` (M/M/M/L);
+`--tz` (L/L/M/M: the committer date's day is already local); a built-in
+holiday calendar (M/L/H/H: would be invented data); `--max-commits` cap with
+a notice (L/L/L/L: window sizes are small in practice); running git in a
+sandbox (M/M/H/M); localised headings (M/L/M/L); time-spent estimates from
+commit times (L/L/L/H: misleading); Slack Block Kit output (L/L/M/L).
+
 ### Added
 - **References.** `ABC-123`, `#77`, `GH-77`, `closes #77`, squash `(#412)`,
   merge and Bitbucket/GitLab pull and merge requests, from the subject and the

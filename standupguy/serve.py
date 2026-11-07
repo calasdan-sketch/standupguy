@@ -75,6 +75,7 @@ from . import digest as digest_mod
 from . import inflight as inflight_mod
 from . import gitlog as gitlog_mod
 from . import push as push_mod
+from . import redact as redact_mod
 from . import stdio as stdio_mod
 
 
@@ -310,6 +311,10 @@ def _author(root: str, query: dict) -> str | None:
 def _payload(roots: list, query: dict, weekly: bool) -> tuple[int, str, str]:
     """(status, content_type, body) for one repo or several."""
     fmt = (query.get("format", ["json"])[0] or "json").lower()
+    profile = (query.get("redact", [""])[0] or "").lower()
+    if profile and profile not in redact_mod.PROFILES:
+        raise ValueError("redact must be one of "
+                         + ", ".join(redact_mod.PROFILES))
     until = query.get("until", [None])[0] or None
     if weekly:
         since = query.get("since", ["7 days ago"])[0] or "7 days ago"
@@ -322,6 +327,10 @@ def _payload(roots: list, query: dict, weekly: bool) -> tuple[int, str, str]:
         if value:
             gitlog_mod.check_date(value)  # ValueError -> 400 below
     sections, repos = [], []
+    opts = digest_mod.raw_options()
+    if profile:
+        # the markdown and slack_text follow the profile asked for too
+        opts.redactor = redact_mod.make(profile)
     for root in roots:
         author = _author(root, query)    # each repo's own user, like the CLI
         # git runs ONCE per repo per request; markdown and JSON share the facts
@@ -332,16 +341,22 @@ def _payload(roots: list, query: dict, weekly: bool) -> tuple[int, str, str]:
         if weekly:
             md = digest_mod.weekly_markdown(root, author, since, until,
                                             commits=commits,
-                                            opts=digest_mod.raw_options())
+                                            opts=opts)
         else:
             md = digest_mod.digest_markdown(root, since, label, author, until,
                                             commits=commits,
                                             in_progress=in_progress,
-                                            opts=digest_mod.raw_options(),
+                                            opts=opts,
                                             in_flight=found)
         sections.append(md)
-        repos.append(digest_mod.to_json(root, label, since, until, commits,
-                                        in_progress, in_flight=found))
+        payload = digest_mod.to_json(root, label, since, until, commits,
+                                     in_progress, in_flight=found)
+        if profile and profile != "off":
+            # the JSON is exact by default (like --format json); a
+            # workflow that forwards subjects or e-mails asks for redact=
+            payload = digest_mod.redact_payload(
+                payload, redact_mod.make(profile))
+        repos.append(payload)
     md = "\n".join(sections)
     if fmt == "markdown":
         return 200, "text/markdown; charset=utf-8", md

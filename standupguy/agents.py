@@ -32,6 +32,8 @@ _AGENTS = (
     ("Gemini", re.compile(r"\bgemini\b", re.I)),
     ("Aider", re.compile(r"\(aider\)|\baider\b", re.I)),
 )
+_HINT_RE = re.compile(
+    r"claude|anthropic|copilot|codex|openai|cursor|devin|gemini|aider", re.I)
 _FOOTER_RE = re.compile(
     r"generated (?:with|by) \[?(claude code|codex|cursor|copilot|aider|devin)",
     re.I)
@@ -41,6 +43,10 @@ def agent_of(commit) -> str | None:
     """The agent's name if this commit shows one, else None."""
     candidates = list(getattr(commit, "coauthors", ()) or ())
     candidates.append(getattr(commit, "author", "") or "")
+    body = getattr(commit, "body", "") or ""
+    # fast path: nearly every commit names no agent at all
+    if not _HINT_RE.search("\n".join(candidates) + "\n" + body):
+        return None
     for label, rx in _AGENTS:
         if any(rx.search(c) for c in candidates):
             return label

@@ -31,6 +31,7 @@ from . import inflight as inflight_mod
 from . import mcp as mcp_mod
 from . import push as push_mod
 from . import redact as redact_mod
+from . import scan as scan_mod
 from . import serve as serve_mod
 from . import stdio as stdio_mod
 
@@ -122,7 +123,7 @@ def _options(args) -> digest_mod.Options:
         redactor=redact_mod.make(profile, args.redact_term or ()),
         group=args.group, fold=not args.no_fold,
         inflight=not args.no_inflight, style=args.style,
-        agent_sessions=args.agent_sessions)
+        agent_sessions=args.agent_sessions, stat=args.stat)
 
 
 def _repo_digest(args, root: str, opts=None) -> tuple[str, dict]:
@@ -130,7 +131,8 @@ def _repo_digest(args, root: str, opts=None) -> tuple[str, dict]:
     opts = opts or _options(args)
     author = _resolve_author(args, root)
     since, until, label = _window(args)
-    commits = gitlog_mod.commits_since(root, since, author, until)
+    commits = gitlog_mod.commits_since(root, since, author, until,
+                                       stat=args.stat)
     in_progress = gitlog_mod.uncommitted(root)
     found = inflight_mod.find(root, since, until, author) \
         if opts.inflight and not args.week else []
@@ -158,23 +160,6 @@ def _show(text: str) -> None:
     stdio_mod.stdout().write(stdio_mod.printable(text))
 
 
-def _redact_payload(payload: dict, redactor) -> dict:
-    """`payload` with its text fields run through the redaction profile (only
-    when --redact was given with --format json)."""
-    r = redactor.text
-    payload = dict(payload)
-    payload["repo"] = redactor.repo(payload["repo"])
-    payload["in_progress"] = [r(p) for p in payload["in_progress"]]
-    payload["commits"] = [dict(c, subject=r(c["subject"]),
-                               files=[r(f) for f in c["files"]],
-                               email=r(c["email"]),
-                               coauthors=[r(a) for a in c["coauthors"]])
-                          for c in payload["commits"]]
-    for item in payload.get("in_flight", []):
-        item["subject"], item["name"] = r(item["subject"]), r(item["name"])
-    return payload
-
-
 def _emit(args, text: str) -> None:
     """Show `text`; copy it too when asked."""
     _show(text)
@@ -191,10 +176,22 @@ def _emit(args, text: str) -> None:
 def cmd_digest(args) -> int:
     opts = _options(args)
     results = [_repo_digest(args, root, opts) for root in args.root]
+    if args.scan:
+        # a scan finds every project you have: show the ones with news
+        total = len(results)
+        results = [(m, p) for m, p in results
+                   if p["commits"] or p["in_progress"] or p.get("in_flight")]
+        if not results:
+            msg = f"No activity in the {total} repo(s) found by --scan."
+            if args.format == "json":
+                stdio_mod.stdout().write(json.dumps({"repos": []}) + "\n")
+            else:
+                _emit(args, msg + "\n")
+            return 0
     if args.format == "json":
         payloads = [p for _, p in results]
         if args.redact is not None:
-            payloads = [_redact_payload(p, opts.redactor) for p in payloads]
+            payloads = [digest_mod.redact_payload(p, opts.redactor) for p in payloads]
         data = payloads[0] if len(payloads) == 1 else {"repos": payloads}
         stdio_mod.stdout().write(json.dumps(data, indent=2) + "\n")
         return 0
@@ -277,6 +274,23 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Repo path (default: the current directory). Repeat "
                         "for a multi-repo digest (one section per repo); "
                         "`mcp` and `serve` take it repeated too.")
+    p.add_argument("--scan", action="append", default=None, metavar="DIR",
+                   help="Also digest every git repo found under DIR (repeat "
+                        "for more). Quiet repos are left out. Never follows "
+                        "symbolic links; skips node_modules, .venv and the "
+                        "like.")
+    p.add_argument("--scan-depth", type=int, default=scan_mod.DEFAULT_DEPTH,
+                   metavar="N",
+                   help=f"How many folders down --scan looks (default "
+                        f"{scan_mod.DEFAULT_DEPTH}, at most "
+                        f"{scan_mod.MAX_DEPTH}).")
+    p.add_argument("--stat", action="store_true",
+                   help="Show lines added and removed on each commit line "
+                        "(and in --format json).")
+    p.add_argument("--holidays", default=None, metavar="DATES",
+                   help="Days off, comma-separated ISO dates "
+                        "(2026-12-25,2026-12-28): 'last workday' skips "
+                        "them. Also read from STANDUPGUY_HOLIDAYS.")
     p.add_argument("--author", default=None,
                    help="Filter by author: case-insensitive substring of the "
                         "author name or email (default: your git user.email).")
@@ -429,6 +443,8 @@ def _check_values(args) -> bool:
     so it used to read as "not given": nothing was posted, nothing was said,
     exit code 0."""
     given = [("--root", "a repo path", value) for value in args.root or ()]
+    given += [("--scan", "a folder", value) for value in args.scan or ()]
+    given += [("--holidays", "days off such as 2026-12-25", args.holidays)]
     given += [(flag, what, getattr(args, name))
               for flag, name, what in _TEXT_OPTIONS]
     for flag, what, value in given:
@@ -517,6 +533,61 @@ def _check_workdays(args) -> bool:
     return True
 
 
+def _check_holidays(args) -> bool:
+    """--holidays (else STANDUPGUY_HOLIDAYS) must be real dates; a typo must
+    not quietly leave a holiday counted as a workday."""
+    spec, source = args.holidays, "--holidays"
+    if spec is None:
+        spec, source = (os.environ.get("STANDUPGUY_HOLIDAYS") or "").strip() \
+            or None, "STANDUPGUY_HOLIDAYS"
+    try:
+        gitlog_mod.set_holidays(
+            gitlog_mod.parse_holidays(spec) if spec else ())
+    except ValueError as e:
+        print(stdio_mod.printable(
+            f"error: {source} {e} (expected e.g. 2026-12-25,2026-12-28)"),
+            file=sys.stderr)
+        return False
+    return True
+
+
+def _expand_scan(args) -> bool:
+    """Add the repos --scan finds to args.root. False (after saying why) when
+    a scan cannot be done honestly."""
+    if not args.scan:
+        return True
+    found: list[str] = []
+    for base in args.scan:
+        try:
+            found += scan_mod.find_repos(base, args.scan_depth)
+        except scan_mod.ScanError as e:
+            print(stdio_mod.printable(f"error: {e}"), file=sys.stderr)
+            return False
+    roots = list(args.root or [])
+    seen = {os.path.realpath(r) for r in roots}
+    for repo in found:
+        # a repo git will not open (owned by another user, say) is skipped
+        # with a word, not fatal: the rest of the scan still counts
+        try:
+            gitlog_mod._git(repo, "rev-parse", "--git-dir")
+        except gitlog_mod.GitNotFound:
+            raise
+        except gitlog_mod.GitError:
+            print(stdio_mod.printable(
+                f"warning: skipped {repo}: git cannot open it"),
+                file=sys.stderr)
+            continue
+        if os.path.realpath(repo) not in seen:
+            seen.add(os.path.realpath(repo))
+            roots.append(repo)
+    if not roots:
+        print("note: --scan found no git repositories", file=sys.stderr)
+        args.root = []
+    else:
+        args.root = roots
+    return True
+
+
 def _check_dry_run(args) -> bool:
     """--dry-run shows what --draft or --push-slack would send. Alone (or
     with `mcp` / `serve`) it would change nothing: say so (False)."""
@@ -555,11 +626,22 @@ def _main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if not _check_values(args) or not _check_redact_env(args):
         return 2
-    args.root = args.root or [os.getcwd()]
+    if args.scan and args.cmd is None and not (0 <= args.scan_depth
+                                                <= scan_mod.MAX_DEPTH):
+        print(f"error: --scan-depth must be from 0 to {scan_mod.MAX_DEPTH}",
+              file=sys.stderr)
+        return 2
+    if not args.scan:
+        args.root = args.root or [os.getcwd()]
     if not _check_output_flags(args) or not _check_format_flags(args) \
-            or not _check_dry_run(args) or not _check_workdays(args):
+            or not _check_dry_run(args) or not _check_workdays(args) \
+            or not _check_holidays(args):
         return 2
     try:
+        if not _expand_scan(args):
+            return 2
+        if args.scan and not args.root:
+            return 0
         if not _check_roots(args.root):     # mcp, serve and the digest alike
             return 2
         if args.cmd == "mcp":
