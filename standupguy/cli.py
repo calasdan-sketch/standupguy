@@ -25,7 +25,7 @@ import os
 import re
 import sys
 
-from . import __version__
+from . import __author__, __version__
 from . import digest as digest_mod
 from . import draft as draft_mod
 from . import formats as formats_mod
@@ -153,6 +153,20 @@ def _author_hint(args, root, since, until, author, commits) -> None:
             file=sys.stderr)
 
 
+def _shallow_hint(args, root: str, commits) -> None:
+    """A shallow clone cuts history at a depth: the oldest commit kept
+    lists every file of the project as its change, so its file count (and
+    --stat) is wrong, and older work is simply missing. Say so on stderr."""
+    if not commits or not gitlog_mod.is_shallow(root):
+        return
+    where = f" ({gitlog_mod.repo_name(root)})" if len(args.root or ()) > 1 \
+        else ""
+    print(stdio_mod.printable(
+        f"note: this is a shallow clone{where}: older history is missing, "
+        "and the oldest commit shown may list every file as changed "
+        "(git fetch --unshallow gets the rest)"), file=sys.stderr)
+
+
 def _options(args) -> digest_mod.Options:
     profile = args.redact or (os.environ.get("STANDUPGUY_REDACT") or "").strip() \
         or redact_mod.DEFAULT_PROFILE
@@ -160,7 +174,8 @@ def _options(args) -> digest_mod.Options:
         redactor=redact_mod.make(profile, args.redact_term or ()),
         group=args.group, fold=not args.no_fold,
         inflight=not args.no_inflight, style=args.style,
-        agent_sessions=args.agent_sessions, stat=args.stat)
+        agent_sessions=args.agent_sessions, stat=args.stat,
+        by_author=args.by_author)
 
 
 def _repo_digest(args, root: str, opts=None) -> tuple[str, dict]:
@@ -172,6 +187,7 @@ def _repo_digest(args, root: str, opts=None) -> tuple[str, dict]:
                                        stat=args.stat)
     in_progress = gitlog_mod.uncommitted(root)
     _author_hint(args, root, since, until, author, commits)
+    _shallow_hint(args, root, commits)
     found = inflight_mod.find(root, since, until, author) \
         if opts.inflight and not args.week else []
     if args.sprint is not None:
@@ -307,7 +323,7 @@ def _positive_int(value: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="standupguy", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    p.add_argument("--version", action="version", version=f"%(prog)s {VERSION} (by {__author__})")
     p.add_argument("--root", action="append", default=None, metavar="PATH",
                    help="Repo path (default: the current directory). Repeat "
                         "for a multi-repo digest (one section per repo); "
@@ -381,6 +397,12 @@ def build_parser() -> argparse.ArgumentParser:
                    metavar="WORD",
                    help="Also hide this word (a customer, a code name); "
                         "repeatable.")
+    p.add_argument("--by-author", action="store_true",
+                   help="With --all (a team's repo): one Shipped section per "
+                        "person, busiest first, instead of one mixed list. "
+                        "Not with --style ytb, --week or --sprint. "
+                        "--redact strict shows person-1, person-2 ... "
+                        "instead of names.")
     p.add_argument("--no-fold", action="store_true",
                    help="List every commit: do not fold fixup!/WIP saves, "
                         "branch syncs, revert pairs and duplicates.")
@@ -547,6 +569,23 @@ def _check_output_flags(args) -> bool:
     return False
 
 
+def _check_by_author(args) -> bool:
+    """--by-author is for the standup style; the others would quietly
+    ignore it, so say so."""
+    if not args.by_author or args.cmd is not None:
+        return True
+    clash = [flag for flag, given in (("--style ytb", args.style == "ytb"),
+                                      ("--week", args.week),
+                                      ("--sprint", args.sprint is not None))
+             if given]
+    if not clash:
+        return True
+    print(f"error: --by-author cannot be combined with {' or '.join(clash)}: "
+          "it splits the standup style's Shipped list by person",
+          file=sys.stderr)
+    return False
+
+
 def _check_workdays(args) -> bool:
     """--workdays (else STANDUPGUY_WORKDAYS) must name working days. A bad
     value is an error (False, after saying why), not a quiet Monday-to-
@@ -651,7 +690,7 @@ def cmd_doctor() -> int:
     git and the current folder's git e-mail; sends nothing anywhere."""
     import platform
     out = stdio_mod.stdout()
-    rows = [("standupguy", __version__),
+    rows = [("standupguy", f"{__version__} ({__author__})"),
             ("python", f"{platform.python_version()} on {platform.system()}"),
             ("output encoding", getattr(out, "encoding", None) or "unknown")]
     problems = 0
@@ -730,6 +769,7 @@ def _main(argv=None) -> int:
     if not args.scan:
         args.root = args.root or [os.getcwd()]
     if not _check_output_flags(args) or not _check_format_flags(args) \
+            or not _check_by_author(args) \
             or not _check_dry_run(args) or not _check_workdays(args) \
             or not _check_holidays(args):
         return 2
@@ -741,7 +781,14 @@ def _main(argv=None) -> int:
         if not _check_roots(args.root):     # mcp, serve and the digest alike
             return 2
         if args.cmd == "mcp":
-            return mcp_mod.serve(args.root)
+            # the digest goes to the model behind your coding agent: the
+            # server's owner (not the agent) picks how much is hidden
+            profile = args.redact or (os.environ.get("STANDUPGUY_REDACT")
+                                      or "").strip() \
+                or redact_mod.DEFAULT_PROFILE
+            return mcp_mod.serve(args.root, opts=digest_mod.Options(
+                redactor=redact_mod.make(profile, args.redact_term or ()),
+                escape=False))
         if args.cmd == "serve":
             token = args.token if args.token is not None else \
                 (os.environ.get("STANDUPGUY_TOKEN") or None)

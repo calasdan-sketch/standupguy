@@ -30,8 +30,8 @@
     "changed_by_mistake": 0,
     "leaked": 0,
     "leaked_by_kind": {},
-    "ordinary_strings": 41,
-    "planted": 120,
+    "ordinary_strings": 50,
+    "planted": 155,
     "recall": 1.0
   },
   "refs": {

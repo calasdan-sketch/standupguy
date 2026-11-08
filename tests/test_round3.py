@@ -43,15 +43,15 @@ def make_two_author_repo() -> str:
     tmp = tempfile.mkdtemp()
     git(tmp, "init", "-qb", "main")
     git(tmp, "config", "user.email", "dan+work@example.com")
-    git(tmp, "config", "user.name", "Dan Calas")
-    commit(tmp, "Dan Calas", "dan+work@example.com", "2026-10-13T10:00:00",
+    git(tmp, "config", "user.name", "Dana Kalas")
+    commit(tmp, "Dana Kalas", "dan+work@example.com", "2026-10-13T10:00:00",
            "feat: alpha", {"a.py": "1"})
     # trailing space in the name as typed; git itself trims it on commit
     commit(tmp, GREEK + " ", GREEK_EMAIL, "2026-10-14T09:00:00",
            "fix: βήτα crash 🐛", {"b.py": "2"})
-    commit(tmp, "Dan Calas", "dan+work@example.com", "2026-10-14T16:00:00",
+    commit(tmp, "Dana Kalas", "dan+work@example.com", "2026-10-14T16:00:00",
            "wip: gamma half done", {"c.py": "3"})
-    commit(tmp, "Dan Calas", "dan+work@example.com", "2026-10-15T11:00:00",
+    commit(tmp, "Dana Kalas", "dan+work@example.com", "2026-10-15T11:00:00",
            "docs: delta notes", {"d.md": "4"})
     with open(os.path.join(tmp, "e.py"), "w", encoding="utf-8") as f:
         f.write("uncommitted")
@@ -68,9 +68,9 @@ class TestAuthorFilter(unittest.TestCase):
         tmp = make_two_author_repo()
         dan = {"feat: alpha", "wip: gamma half done", "docs: delta notes"}
         self.assertEqual(set(_subjects(tmp, "dan+work@example.com")), dan)
-        self.assertEqual(set(_subjects(tmp, "DAN CALAS")), dan)
-        self.assertEqual(set(_subjects(tmp, "calas")), dan)  # Καλάς != Calas
-        self.assertEqual(set(_subjects(tmp, "Dan Calas <dan+work@example.com>")),
+        self.assertEqual(set(_subjects(tmp, "DANA KALAS")), dan)
+        self.assertEqual(set(_subjects(tmp, "kalas")), dan)  # Καλάς != Kalas
+        self.assertEqual(set(_subjects(tmp, "Dana Kalas <dan+work@example.com>")),
                          dan)
         self.assertEqual(_subjects(tmp, "teammate"), [])
 
@@ -89,9 +89,9 @@ class TestAuthorFilter(unittest.TestCase):
         self.assertEqual(_subjects(tmp, "d.n"), [])  # no regex dot
 
     def test_author_matches_unit(self):
-        c = gitlog_mod.Commit("x", "Dan Calas", "dan+work@example.com",
+        c = gitlog_mod.Commit("x", "Dana Kalas", "dan+work@example.com",
                               "2026-10-14", "s", [])
-        self.assertTrue(gitlog_mod.author_matches(c, "CALAS"))
+        self.assertTrue(gitlog_mod.author_matches(c, "KALAS"))
         self.assertTrue(gitlog_mod.author_matches(c, " dan+work "))
         self.assertTrue(gitlog_mod.author_matches(c, ""))
         self.assertTrue(gitlog_mod.author_matches(c, None))
@@ -105,7 +105,7 @@ class TestAuthorFilter(unittest.TestCase):
                                  "--format", "json"])
         self.assertEqual(code, 0)
         data = json.loads(buf.getvalue())
-        self.assertEqual({c["author"] for c in data["commits"]}, {"Dan Calas"})
+        self.assertEqual({c["author"] for c in data["commits"]}, {"Dana Kalas"})
         self.assertIn("email", data["commits"][0])
 
 

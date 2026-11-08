@@ -55,6 +55,57 @@ _SECRET_RES = [
 ]
 _ASSIGN_RE = _SECRET_RES[-1]
 
+# A webhook URL is a secret whole: whoever has it can post as you, and on
+# these hosts the secret is the PATH, which the public-URL rule keeps.
+_WEBHOOK_RES = [re.compile(p, re.I) for p in (
+    r"https?://hooks\.slack\.com/(?:services|workflows|triggers)/[^\s<>\"'`)\]]+",
+    r"https?://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/(?:v\d+/)?webhooks/"
+    r"\d+/[A-Za-z0-9_\-]+",
+    r"https?://[A-Za-z0-9.\-]*webhook\.office\.com/[^\s<>\"'`)\]]+",
+    r"https?://outlook\.office(?:365)?\.com/webhook/[^\s<>\"'`)\]]+",
+    r"https?://hooks\.zapier\.com/hooks/[^\s<>\"'`)\]]+",
+    r"https?://api\.telegram\.org/bot\d+:[A-Za-z0-9_\-]+",
+)]
+# `Authorization: Basic dXNlcjpwYXNz` (a word like "basic infrastructure"
+# has no digit, `=` or `+` in it)
+_BASIC_RE = re.compile(
+    r"(?i)\bbasic\s+(?=[A-Za-z0-9+/]*[0-9=+/])[A-Za-z0-9+/]{16,}={0,2}")
+# "password": "a pass phrase"  /  secret = 'two words': the quotes say it
+# is a value, so the whole quoted text goes, digit or not
+_QUOTED_ASSIGN_RE = re.compile(
+    r"(?i)(\b(?:pass(?:word|wd|phrase)?|secret|token|api[_\-]?key|apikey|"
+    r"access[_\-]?key|private[_\-]?key|credentials?)[\"']\s*[:=]\s*|"
+    r"\b(?:pass(?:word|wd|phrase)?|secret|api[_\-]?key)\s*=\s*)"
+    r"(\"[^\"\n]{4,200}\"|'[^'\n]{4,200}')")
+# the user name inside a home folder is a person's name (`/Users/`, as
+# macOS spells it, exactly: `/users/123` is a REST route)
+_HOME_RE = re.compile(
+    r"(/Users/|(?i:\b[A-Za-z]:[\\/]+Users[\\/]+))([^/\\\s:\"'`)\]<>]+)")
+# /home/NAME looks the same as a web route (/home/dashboard): strict only
+_HOME_LINUX_RE = re.compile(r"(/home/)([^/\\\s:\"'`)\]<>]+)")
+_CARD_RE = re.compile(r"(?<![\w.\-])(?:\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{1,7}"
+                      r"|\d{15,16})(?![\w\-])")
+_SSN_RE = re.compile(r"(?<![\d\-])(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)"
+                     r"\d{4}(?![\d\-])")
+_SIN_RE = re.compile(r"(?<![\d\-])\d{3}[ -]\d{3}[ -]\d{3}(?![\d\-])")
+# private IPv6: unique-local fc00::/7 and link-local fe80::/10
+_IP6_RE = re.compile(
+    r"(?i)(?<![\w:])(?:f[cd][0-9a-f]{2}|fe[89ab][0-9a-f]):"
+    r"(?:[0-9a-f]{0,4}:){1,6}[0-9a-f]{0,4}(?![\w:])")
+_CARD_PREFIX_RE = re.compile(r"4|5[1-5]|2[2-7]|3[47]|6011|65")
+
+
+def _luhn(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        n = int(ch)
+        if i % 2:
+            n *= 2
+            if n > 9:
+                n -= 9
+        total += n
+    return total % 10 == 0
+
 _URL_RE = re.compile(
     r"\b([A-Za-z][A-Za-z0-9+.\-]{1,15})://([^\s<>\"'`)\]]{1,2000})")
 # every repetition is bounded and starts at a boundary: a 1 MB commit
@@ -62,7 +113,14 @@ _URL_RE = re.compile(
 _BARE_INTERNAL_RE = re.compile(
     r"(?<![\w.\-])(?:[A-Za-z0-9\-]{1,63}\.){1,8}"
     r"(?:internal|corp|local|lan|intranet|home|private)"
+    r"(?:\.[A-Za-z0-9\-]{1,63}){0,4}"
     r"(?::\d{1,5})?(?:/[^\s<>\"'`)\]]{0,300})?(?![\w])", re.I)
+
+# `appsettings.local.json`, `next.config.local.js`: a file, not a host
+_FILE_EXTS = frozenset((
+    "json js ts tsx jsx mjs cjs py rb php yml yaml toml ini cfg conf env md "
+    "txt sh bat ps1 xml html css scss lock log sql csv properties gradle "
+    "java kt go rs example sample dist bak template tpl").split())
 _EMAIL_RE = re.compile(
     r"(?<![\w.%+\-])[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9\-]{1,63}"
     r"(?:\.[A-Za-z0-9\-]{1,63}){1,8}")
@@ -139,13 +197,27 @@ class Redactor:
             return self._repos.setdefault(name, f"project-{len(self._repos) + 1}")
         return self.text(name)
 
+    def person(self, name: str, number: int) -> str:
+        """A person's name as the profile shows it: strict makes them
+        `person-1`, `person-2` ... (by rank within one repository's digest,
+        busiest first: the label says nothing about who it is); the others
+        show the name."""
+        if self.profile == "strict":
+            return f"person-{number}"
+        return self.text(name)
+
     def text(self, s: str) -> str:
         if not self.active or not s:
             return s
         if self._terms:
             s = self._terms.sub(lambda m: self._hit("{redacted}"), s)
+        for rx in _WEBHOOK_RES:
+            s = rx.sub(lambda m: self._hit("{secret}"), s)
         for rx in _SECRET_RES[:-1]:
             s = rx.sub(lambda m: self._hit("{secret}"), s)
+        s = _BASIC_RE.sub(lambda m: self._hit("{secret}"), s)
+        s = _QUOTED_ASSIGN_RE.sub(
+            lambda m: m.group(1) + self._hit('"{secret}"'), s)
         # URLs get their own rules; the other patterns look at the text
         # between them only, so a public link is not mangled twice
         out, pos = [], 0
@@ -158,11 +230,48 @@ class Redactor:
 
     def _plain(self, s: str) -> str:
         s = _ASSIGN_RE.sub(lambda m: m.group(1) + self._hit("{secret}"), s)
-        s = _BARE_INTERNAL_RE.sub(lambda m: self._hit("{internal-url}"), s)
+        s = _HOME_RE.sub(self._home, s)
+        if self.profile == "strict":
+            s = _HOME_LINUX_RE.sub(self._home, s)
+        s = _BARE_INTERNAL_RE.sub(self._bare_internal, s)
+        s = _SSN_RE.sub(lambda m: self._hit("{id-number}"), s)
+        s = _SIN_RE.sub(self._sin, s)
+        s = _CARD_RE.sub(self._card, s)
+        s = _IP6_RE.sub(lambda m: self._hit("{ip}"), s)
         s = _EMAIL_RE.sub(lambda m: self._hit("{email}"), s)
         s = _IP_RE.sub(lambda m: self._hit("{ip}") if _private_ip(m) else m.group(0), s)
         s = _LONG_TOKEN_RE.sub(self._long, s)
         return s
+
+    def _home(self, m) -> str:
+        """/Users/dan/x becomes ~/x: the folder keeps its shape, the
+        person's name goes (not a system name such as Shared)."""
+        if m.group(2).lower() in ("shared", "public", "default", "all"):
+            return m.group(0)
+        self.count += 1
+        return "~"
+
+    def _bare_internal(self, m) -> str:
+        text = m.group(0)
+        parts = text.lower().split(".")
+        if len(parts) >= 3 and parts[-1] in _FILE_EXTS \
+                and parts[-2] in _INTERNAL_LABELS \
+                and ":" not in text and "/" not in text:
+            return text                     # appsettings.local.json
+        return self._hit("{internal-url}")
+
+    def _card(self, m) -> str:
+        text = m.group(0)
+        digits = re.sub(r"\D", "", text)
+        if 13 <= len(digits) <= 19 and _luhn(digits) and (
+                digits != text or _CARD_PREFIX_RE.match(digits)):
+            return self._hit("{card}")
+        return text
+
+    def _sin(self, m) -> str:
+        text = m.group(0)
+        return self._hit("{id-number}") if _luhn(re.sub(r"\D", "", text)) \
+            else text
 
     def _url(self, m) -> str:
         scheme, rest = m.group(1), m.group(2)

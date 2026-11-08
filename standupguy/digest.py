@@ -84,7 +84,7 @@ class Options:
 
     def __init__(self, redactor=None, group="type", fold=True, escape=True,
                  inflight=True, style="standup", agent_sessions=False,
-                 stat=False):
+                 stat=False, by_author=False):
         self.redactor = redactor or redact_mod.make()
         self.group = group              # "type" or "ticket"
         self.fold = fold
@@ -93,6 +93,7 @@ class Options:
         self.style = style              # "standup" or "ytb"
         self.agent_sessions = agent_sessions
         self.stat = stat                # show lines added / removed
+        self.by_author = by_author      # one Shipped section per person
 
 
 DEFAULT_OPTIONS = Options()
@@ -270,6 +271,27 @@ def _group_items(items, opts: Options):
     return [(GROUP_TITLES[g], v) for g, v in groups.items() if v]
 
 
+def _authors(commits) -> list:
+    """[(display name, [commit])], the busiest person first. People are
+    told apart by e-mail address (case-insensitive); the name shown is the
+    one on their newest commit."""
+    people: OrderedDict[str, list] = OrderedDict()
+    for c in commits:
+        people.setdefault((c.email or c.author).lower(), []).append(c)
+    ranked = sorted(people.values(), key=lambda cs: (-len(cs), cs[0].author))
+    return [(cs[0].author, cs) for cs in ranked]
+
+
+def _shipped_by_author(commits, opts: Options) -> list[str]:
+    lines: list[str] = []
+    for n, (name, mine) in enumerate(_authors(commits), 1):
+        who = opts.redactor.person(name, n)
+        part = _shipped_lines(_folded(mine, opts), mine, opts)
+        part[0] = f"## Shipped - {_t(opts, who)}"
+        lines += part
+    return lines
+
+
 def _shipped_lines(folded, commits, opts: Options) -> list[str]:
     lines = ["## Shipped"]
     for heading, items in _group_items(folded.items, opts):
@@ -367,7 +389,9 @@ def digest_markdown(root: str, since: str, label: str,
         lines.append("No commits or uncommitted changes in range. "
                      "Touch grass. 🌱")
         return "\n".join(lines) + "\n"
-    if commits:
+    if commits and opts.by_author and len(_authors(commits)) > 1:
+        lines += _shipped_by_author(commits, opts)
+    elif commits:
         lines += _shipped_lines(_folded(commits, opts), commits, opts)
     lines += _inflight_lines(found, opts)
     lines += sessions

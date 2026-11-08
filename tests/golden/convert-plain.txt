@@ -1,0 +1,16 @@
+Standup — demo
+since 2026-10-14
+
+SHIPPED
+  Features:
+- add login flow, see [docs](http://x) [PR #12] (2 files) abc1234
+- ping [at]channel and [at]here for <b> (1 file) def5678
+
+  Fixes:
+- null pointer on logout [ABC-9] (1 file) 0123456
+
+IN PROGRESS
+- wip.py
+
+BLOCKERS
+none reported — fill in yours

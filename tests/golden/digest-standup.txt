@@ -1,0 +1,18 @@
+# Standup — REPO
+_2026-10-14 → 2026-10-15_
+
+## Shipped
+### Features
+- add login flow (1 file) `SHA`
+
+### Fixes
+- null pointer on logout (1 file) `SHA`
+
+### Docs
+- update readme (1 file) `SHA`
+
+## In progress (uncommitted)
+- `wip.py`
+
+## Blockers
+_none reported — fill in yours_

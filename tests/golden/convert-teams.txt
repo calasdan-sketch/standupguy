@@ -1,0 +1,16 @@
+**Standup — demo**
+_since 2026-10-14_
+
+**Shipped**
+*Features*
+- add **login** flow, see [docs]\(http://x) [PR #12] (2 files) `abc1234`
+- ping [at]channel and [at]here for \<b> (1 file) `def5678`
+
+*Fixes*
+- null pointer on _logout_ [ABC-9] (1 file) `0123456`
+
+**In progress**
+- `wip.py`
+
+**Blockers**
+_none reported — fill in yours_

@@ -1,0 +1,25 @@
+{
+ "top": [
+  "commits",
+  "in_flight",
+  "in_progress",
+  "label",
+  "repo",
+  "since",
+  "until"
+ ],
+ "commit": [
+  "agent",
+  "author",
+  "coauthors",
+  "date",
+  "email",
+  "files",
+  "group",
+  "pr",
+  "refs",
+  "sha",
+  "subject",
+  "wip"
+ ]
+}

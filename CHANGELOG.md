@@ -6,6 +6,41 @@ Measured by `python bench/bench.py` (see the README, *What changed in 0.3.0*).
 PyPI has 0.1.0 (read-only `pip index versions standupguy`): the next release
 is 0.3.0, which also carries everything listed under 0.2.0 below.
 
+### Added (round 5: privacy review, MCP manners, the team view)
+- Redaction (default `standard`) now also removes webhook URLs (Slack,
+  Discord, Teams, Zapier, Telegram bot), `Authorization: Basic ...`, quoted
+  `"password": "pass phrase"` values, the user name in `/Users/NAME` and
+  `C:\Users\NAME` (shown as `~`; `/home/NAME` only with `--redact strict`),
+  US social security and Canadian SIN numbers, Luhn-valid card numbers and
+  private IPv6 addresses. Benchmark: 35 of 35 new cases leaked before, 0
+  after; 50 ordinary strings changed by mistake: 0.
+- `--by-author` (with `--all`): one `Shipped` section per person, busiest
+  first; `--redact strict` shows `person-1`... instead of names.
+- `standupguy mcp` takes `--redact` / `--redact-term` (and reads
+  `STANDUPGUY_REDACT`): the server's owner, not the calling agent, decides
+  what is hidden. Before, `mcp` always used `standard` and ignored both.
+- MCP: the tool is annotated read-only; `initialize` answers with the
+  protocol version the client asked for when it is one of 2025-06-18,
+  2025-03-26, 2024-11-05 (it always said 2024-11-05).
+- A note on stderr for a shallow clone (the oldest commit lists every file).
+- `__author__`; `--version` and `doctor` name the maker.
+- Tests: seeded property tests, mutation-style sanity checks, golden files
+  (`tests/golden/`), a differential test of date windows against a Python
+  reference, a no-network test.
+
+### Fixed (round 5)
+- `.local` in a file name (`appsettings.local.json`, `next.config.local.js`)
+  was redacted as an internal host; and `git.corp.example.com` left
+  `.example.com` behind. Both fixed.
+- Under a non-UTF-8 locale (`LC_ALL=C` with `PYTHONUTF8=0`), a repository in
+  a folder with an accented name made the in-flight check end in a
+  `UnicodeEncodeError` traceback. Paths git prints are now converted with
+  the file system's own encoding.
+- `git replace` references could change what a commit said in the digest;
+  they are switched off.
+- README and tests no longer use a real person's name as the example
+  author.
+
 ### Added (round 4: the first hour of a stranger who installs it)
 - `standupguy doctor`: git found and new enough, Python, output encoding, the
   git e-mail the digest will filter by. One plain line each; exit 2 only if

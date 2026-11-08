@@ -163,7 +163,7 @@ def pair_repo():
     git(tmp, "init", "-qb", "main")
     git(tmp, "config", "user.email", "dan@example.com")
     commit(tmp, "Alice", "alice@example.com", "2026-10-14T10:00:00",
-           "feat: pair on the parser\n\nCo-authored-by: Dan Calas "
+           "feat: pair on the parser\n\nCo-authored-by: Dana Kalas "
            "<dan@example.com>\nCo-authored-by: Bo <bo@example.com>",
            {"p.py": "x"})
     commit(tmp, "Alice", "alice@example.com", "2026-10-14T11:00:00",
@@ -196,7 +196,7 @@ class TestCoAuthors(unittest.TestCase):
         self.assertEqual(code, 0, err)
         (c,) = json.loads(out)["commits"]
         self.assertEqual(c["author"], "Alice")
-        self.assertEqual(c["coauthors"], ["Dan Calas <dan@example.com>",
+        self.assertEqual(c["coauthors"], ["Dana Kalas <dan@example.com>",
                                           "Bo <bo@example.com>"])
 
     def test_parse_log_old_and_hostile_fields(self):
@@ -414,8 +414,8 @@ class TestReviewCoauthorEmails(unittest.TestCase):
 
     def test_partial_needles_stay_substrings(self):
         m = gitlog_mod.author_matches
-        c = self.commit(coauthors=["Dan Calas <dan@example.com>"])
-        for needle in ("calas", "dan@example", "Dan Calas <dan@example.com>"):
+        c = self.commit(coauthors=["Dana Kalas <dan@example.com>"])
+        for needle in ("kalas", "dan@example", "Dana Kalas <dan@example.com>"):
             with self.subTest(needle):
                 self.assertTrue(m(c, needle))
 

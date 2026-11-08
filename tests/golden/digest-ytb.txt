@@ -1,0 +1,13 @@
+# Standup — REPO
+_2026-10-14 → 2026-10-15_
+
+## Since 2026-10-14
+- **Features**: add login flow
+- **Fixes**: null pointer on logout
+- **Docs**: update readme
+
+## Today
+- uncommitted: `wip.py`
+
+## Blockers
+_none reported — fill in yours_

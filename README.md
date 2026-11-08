@@ -53,6 +53,7 @@ page does not mention it.
 | Reads | local git | local git | local git | local git | git, GitHub, Jira | answers people type in Slack |
 | Runs | on your computer | on your computer | on your computer | on your computer | on your computer | hosted SaaS |
 | Monday covers Friday | yes (`--workdays`) | yes (`-w`) | — | via `--since` | — | n/a |
+| One section per person on a team's repo | `--by-author` | — | — | — | — | n/a |
 | Co-authored-by counts as yours | yes | no ([open issue #129](https://github.com/kamranahmedse/git-standup/issues/129)) | — | — | — | n/a |
 | Several repos | `--root` (repeat), `--scan DIR` finds repos under a folder | scans folders (`-m` depth) | yes (takes directories to scan) | yes | — | n/a |
 | Lines added / removed per commit | `--stat` | per-commit diff-stat (`-c`) | — | — | — | n/a |
@@ -84,6 +85,11 @@ every git-standup and dawnlog entry is from the earlier reading and
 **unverified** for newer versions. The "safe to point at" row is our own
 test (a `core.fsmonitor` command in a repo's config); it was not run against
 the other tools, so they get "—".
+
+Round 5 re-read the same two wheels (still the newest on PyPI): neither has
+a per-person option beyond `--author`, redaction, MCP, mailmap or
+shallow-clone handling. git-standup and dawnlog were not re-read (no GitHub
+access): unverified.
 
 Round 4 re-read the source of standup-ai 0.2.0 and standupbrain 1.0.4 from
 their wheels (downloaded, not run; both are still the newest on PyPI): the
@@ -146,6 +152,7 @@ standupguy --push-slack --dry-run   # show the exact Slack text; post nothing
 standupguy --format json            # machine-readable digest
 standupguy --author "teammate@co"   # filter (default: your git user)
 standupguy --all                    # everyone
+standupguy --all --by-author        # a team's repo: one Shipped section per person
 standupguy --push-slack             # POST to AUTOSTANDUP_SLACK_WEBHOOK
 standupguy doctor                   # check this install (git, Python, encoding); sends nothing
 standupguy mcp                      # MCP server on stdio
@@ -196,8 +203,8 @@ Check the branch out to see its work (`git switch feature/login`).
 address (`DAN@EXAMPLE.COM`, and the default, your `git config user.email`)
 matches that address **exactly**, ignoring case: `dan@example.com` does not
 pick up `jordan@example.com`. Anything else is a case-insensitive substring
-of the author **name or email** (`calas`, `dan@example`, `ξένος`,
-`"Dan Calas <dan@example.com>"` all work; unicode names are
+of the author **name or email** (`kalas`, `dan@example`, `ξένος`,
+`"Dana Kalas <dan@example.com>"` all work; unicode names are
 matched case-insensitively, surrounding spaces are ignored, and `+`, `.`
 or `[` in an address are literal — git's own `--author` is a case-sensitive
 regex and would miss or fail on those). The default is your `git config
@@ -246,8 +253,8 @@ Every claim here is measured by `python bench/bench.py` (committed results:
 | Ticket / PR / issue extraction on the 99 subjects (precision, recall) | 100%, 27% (merge commits only) | 100%, 100% |
 | ...a naive `[A-Z]+-\d+\|#\d+` regex, same subjects | 41%, 50% | |
 | Noise folded / real work folded by mistake (16 + 12 cases) | 0 / 0 | 16 / 0 |
-| Planted secrets that survive default redaction (120, built at run time) | 120 | 0 |
-| Ordinary strings changed by redaction (41) | 0 | 0 |
+| Planted secrets that survive default redaction (155, built at run time) | 155 | 0 (35 before round 5, see below) |
+| Ordinary strings changed by redaction (50) | 0 | 0 |
 
 Third-round check (same script, `tag_repeats`): of the 12 hand-labelled
 subjects that carry a ticket or issue key, 7 printed it twice
@@ -285,10 +292,28 @@ find out more: the classifier is in `standupguy/themes.py`, about 300 lines.
   own words. The profile applies to the terminal text, `--copy`,
   `--push-slack`, the `--draft` prompt, `serve` and `mcp`; `--format json` is
   exact unless you pass `--redact`. Placeholders look like `{secret}`.
+  Round 5 added what a privacy review found a standup can still carry:
+  webhook URLs (Slack, Discord, Teams, Zapier, Telegram bot: the secret is
+  the path), `Authorization: Basic ...`, a quoted `"password": "a pass
+  phrase"` (the whole quoted text goes), the user name in `/Users/NAME/...`
+  and `C:\Users\NAME\...` (becomes `~`; `/home/NAME` only under `strict`,
+  because `/home/dashboard` is also a web route), US social security and
+  Canadian SIN numbers, card numbers that pass the Luhn check, private IPv6
+  addresses, and an internal host with more labels after it
+  (`git.corp.example.com` used to leave `.example.com` behind). It also
+  stopped changing file names such as `appsettings.local.json`. The 35
+  extra cases (7 kinds) leaked in 35 of 35 before; the run is in
+  `bench/results.json`.
 - **Escaping.** A commit subject cannot become a link (`[x](url)` loses its
   `(`), an autolink or HTML tag (`<` is escaped), a mention (`@alice` is
   escaped; `@channel`/`@here`/`@everyone`/`<!here>` become `[at]channel`), or
   swallow the rest of a line with an unbalanced backtick.
+- **`--by-author`.** With `--all`, one `## Shipped - Name` section per
+  person, busiest first, instead of one mixed list; people are told apart by
+  e-mail address (case-insensitive) and each gets their own folding note.
+  With one author nothing changes. `--redact strict` shows `person-1`,
+  `person-2` ... Standup style only (an error with `--style ytb`, `--week`
+  or `--sprint`); `serve` and `mcp` do not have it.
 - **Other work.** Local branches with your commits in the window that HEAD
   does not have (*pushed* or *local only*), stashes made in the window, other
   worktrees with uncommitted files, and commits made in the window that no
@@ -454,7 +479,9 @@ looked at (a submodule at another commit still shows), because that would
 start git under the submodule's own config. `GIT_DIR`, `GIT_WORK_TREE` and similar variables (set inside
 a git hook) are dropped: `--root` always wins. This closes the config paths
 we know of; it is not a sandbox. Git itself still reads the repository's
-objects and `.mailmap`, and hooks are never run.
+objects and `.mailmap`, and hooks are never run. `git replace` references
+(`refs/replace/*`) are ignored (`GIT_NO_REPLACE_OBJECTS`), so a replacement
+cannot change what a commit says in the digest.
 
 ## How it works
 
@@ -545,7 +572,15 @@ export AUTOSTANDUP_API_KEY="<your key>"
   request with an `isError` result and `serve` with a `500`, and both go on.
 - **MCP server:** exposes `what_did_i_ship {since?, until?, author?, all?,
   root?}` so your coding agent can answer "what did I ship this week" from
-  local git. The server only reads the repo(s) it was started with
+  local git. The digest goes to the model behind your agent, so it is
+  redacted (`standard`) like the terminal text; **you** choose how much when
+  you start it (`standupguy mcp --redact strict --redact-term Globex`, or
+  `STANDUPGUY_REDACT`), and the agent cannot turn it off: a `redact`
+  argument in a call is ignored. The tool is marked read-only
+  (`readOnlyHint`), so a client may run it without asking each time, and the
+  reply to `initialize` names the protocol version the client asked for when
+  it is 2025-06-18, 2025-03-26 or 2024-11-05 (not tried against a real
+  client here). The server only reads the repo(s) it was started with
   (`--root`, repeatable); a `root` argument must be one of them or a
   directory inside one — an agent cannot point it at some other repo on
   your disk. It will not start when a `--root` (default: the current
@@ -725,6 +760,10 @@ or later) already installed - they work offline and download nothing.
   `Improve search ranking`. A bare `fix`, `update` or `misc` commit is
   folded away as noise (and counted); a one-word `fix` is not work you can
   report.
+- **Shallow clones.** In a clone made with `--depth`, history before the
+  cut is missing and the oldest commit git kept lists every file as
+  changed. The digest says so on stderr (`note: this is a shallow clone`);
+  `git fetch --unshallow` fixes it. The text itself is unchanged.
 - **Other branches** are the local ones; remote-only branches and other
   people's work are not listed, and nothing is fetched.
 - **`--scan`** looks `--scan-depth` folders down (default 2, at most 6),

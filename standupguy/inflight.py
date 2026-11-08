@@ -149,14 +149,14 @@ def _date_of(arg: str):
 def _worktrees(root, since, until, author):
     out = g._git(root, "worktree", "list", "--porcelain")
     here = os.path.normcase(os.path.realpath(
-        g._git(root, "rev-parse", "--show-toplevel").strip())
+        g.from_git_path(g._git(root, "rev-parse", "--show-toplevel").strip()))
     ) if _is_worktree(root) else None
     items = []
     path = branch = None
     blocks = []
     for line in out.splitlines() + [""]:
         if line.startswith("worktree "):
-            path = line[9:]
+            path = g.from_git_path(line[9:])
         elif line.startswith("branch "):
             branch = line[7:].removeprefix("refs/heads/")
         elif not line and path:

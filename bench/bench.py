@@ -266,6 +266,32 @@ def secret_cases(seed=7):
         q = _rand(rng, 12)
         out.append(("url-query-token", f"docs: https://example.com/x?token={q}",
                     q))
+    # round 5: shapes found by a privacy review of real standups
+    for _ in range(5):
+        tail = "/".join([_rand(rng, 9, string.ascii_uppercase + string.digits),
+                         _rand(rng, 9, string.ascii_uppercase + string.digits),
+                         _rand(rng, 24)])
+        hook = "https://hooks.slack" + ".com/services/" + tail
+        out.append(("webhook-url", f"notify via {hook}", tail))
+        b64 = _rand(rng, 18, string.ascii_letters) + "9=="
+        out.append(("basic-auth", f"curl -H 'Authorization: Basic {b64}'", b64))
+        words = " ".join(rng.choice(["correct", "horse", "battery", "staple",
+                                     "orange", "river"]) for _ in range(3))
+        out.append(("quoted-passphrase", f'add "password": "{words}" to fixture',
+                    words))
+        user = _rand(rng, 6, string.ascii_lowercase)
+        out.append(("home-folder-user", f"bump /Users/{user}/app/x.py", user))
+        d = [rng.randint(1, 9) for _ in range(8)]
+        d.append((10 - sum((x * 2 - 9 if x * 2 > 9 else x * 2) if i % 2 == 1
+                           else x for i, x in enumerate(d))) % 10)
+        sin = f"{''.join(map(str, d[:3]))} {''.join(map(str, d[3:6]))} " \
+              f"{''.join(map(str, d[6:]))}"
+        out.append(("sin", f"applicant SIN {sin}", sin))
+        ula = f"fd{rng.randint(0, 255):02x}:{rng.randint(1, 9999):x}::{rng.randint(1, 99):x}"
+        out.append(("private-ipv6", f"bind to {ula}", ula))
+        sub = rng.choice(["git", "wiki", "ci"])
+        out.append(("internal-multi-label", f"clone {sub}.corp.example.com/x",
+                    "example.com"))
     return out
 
 
@@ -276,7 +302,12 @@ def clean_cases(seed=11):
            "docs: password reset flow", "refactor src/very/long/module/name/"
            "that/is/long_enough_here.py", "auth middleware cleanup",
            "Merge pull request #5 from acme/feature/secret-santa",
-           "api key rotation docs", "update CHANGELOG for v1.2.3"]
+           "api key rotation docs", "update CHANGELOG for v1.2.3",
+           "edit appsettings.local.json", "add next.config.local.js",
+           "basic infrastructure cleanup for internationalization",
+           "add /home/dashboard route", "GET /users/123", "set timestamp 1700000000000",
+           "call 204-227-5308 about it", "publish 2001:db8::1 docs",
+           "Use Basic auth for the admin page"]
     for _ in range(30):
         out.append("commit " + "".join(rng.choice("0123456789abcdef")
                                        for _ in range(40)))

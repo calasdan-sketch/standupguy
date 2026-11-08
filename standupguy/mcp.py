@@ -32,6 +32,12 @@ SERVER_INFO = {"name": "standupguy", "version": __version__}
 
 TOOL_NAME = "what_did_i_ship"
 
+#: Protocol versions this server can speak, newest first. The reply to
+#: `initialize` names the client's own version when it is one of these, else
+#: the newest (the client then decides whether it can live with that).
+#: Nothing here depends on what changed between them: one read-only tool.
+PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+
 INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
@@ -121,7 +127,7 @@ def _check_call(params) -> dict:
     return args
 
 
-def _call_tool(args: dict, roots: list[str]) -> dict:
+def _call_tool(args: dict, roots: list[str], opts=None) -> dict:
     since = args.get("since") or gitlog_mod.LAST_WORKDAY
     until = args.get("until") or None
     label = f"{since} → {until}" if until else f"since {since}"
@@ -138,13 +144,13 @@ def _call_tool(args: dict, roots: list[str]) -> dict:
                     gitlog_mod.default_author(root) or None
             sections.append(digest_mod.digest_markdown(
                 root, since, label, author, until,
-                opts=digest_mod.raw_options()))
+                opts=opts or digest_mod.raw_options()))
     except Exception as e:
         return _tool_result(json.dumps({"error": str(e)}), is_error=True)
     return _tool_result("\n".join(sections))
 
 
-def handle(request, roots) -> dict | None:
+def handle(request, roots, opts=None) -> dict | None:
     """Answer one JSON-RPC message. Returns None when nothing must be sent:
     notifications (no `id`, or a `notifications/*` method) never get a
     reply, not even an error."""
@@ -168,7 +174,11 @@ def handle(request, roots) -> dict | None:
         return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
     if method == "initialize":
-        return ok({"protocolVersion": "2024-11-05",
+        asked = request.get("params")
+        asked = asked.get("protocolVersion") if isinstance(asked, dict) \
+            else None
+        return ok({"protocolVersion": asked if asked in PROTOCOL_VERSIONS
+                   else PROTOCOL_VERSIONS[0],
                    "capabilities": {"tools": {}},
                    "serverInfo": SERVER_INFO})
     if method == "ping":
@@ -176,6 +186,11 @@ def handle(request, roots) -> dict | None:
     if method == "tools/list":
         return ok({"tools": [{
             "name": TOOL_NAME,
+            "title": "What did I ship",
+            # reads local git history only, never writes, never the network:
+            # a client may let it run without asking each time
+            "annotations": {"readOnlyHint": True, "destructiveHint": False,
+                            "idempotentHint": True, "openWorldHint": False},
             "description": ("Get a Markdown digest of what was shipped in a "
                             "git repo since a date: commits grouped by type, "
                             "in-progress files. Local-only, no cloud."),
@@ -204,11 +219,11 @@ def handle(request, roots) -> dict | None:
             args = _check_call(request.get("params"))
         except InvalidParams as e:
             return _error(req_id, INVALID_PARAMS, str(e))
-        return ok(_call_tool(args, roots))
+        return ok(_call_tool(args, roots, opts))
     return _error(req_id, METHOD_NOT_FOUND, f"unknown method: {method}")
 
 
-def serve(roots=None, stdin=None, stdout=None) -> int:
+def serve(roots=None, stdin=None, stdout=None, opts=None) -> int:
     """Newline-delimited JSON-RPC over stdio, UTF-8 bytes on the wire.
 
     Returns 2, with one line on stderr and before a request is read, when
@@ -241,7 +256,7 @@ def serve(roots=None, stdin=None, stdout=None) -> int:
             response = _error(None, PARSE_ERROR, "Parse error")
         else:
             try:
-                response = handle(request, roots)
+                response = handle(request, roots, opts)
             except Exception as e:  # never let one bad request kill the server
                 rid = request.get("id") if isinstance(request, dict) else None
                 response = _error(rid, INTERNAL_ERROR, str(e))

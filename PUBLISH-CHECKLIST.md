@@ -1,6 +1,7 @@
 # Publish checklist for Dan (do not run until you have read it)
 
-**What to release:** version **0.3.0**. PyPI has only 0.1.0, so this is the
+**What to release:** version **0.3.0** (round 5 changed nothing about the
+number). PyPI has only 0.1.0, so this is the
 first release since then and it also carries everything in the 0.2.0 section
 of the CHANGELOG. It changes behaviour from 0.1.0 (the default window is now
 "last workday", Markdown is redacted and escaped by default). That is fine
@@ -9,12 +10,16 @@ set everywhere; do not change them.
 
 ## Check first (about 5 minutes)
 
-1. `git log --oneline -3` shows the round 4 commit on branch `expert-2`.
+1. `git log --oneline -3` shows the "Round 5:" commits on branch `expert-2`.
 2. `python -m unittest discover -s tests` passes on your machine.
 3. Change "unreleased" to today's date on the 0.3.0 line in `CHANGELOG.md`
    (and the 0.2.0 line, which ships with it). Commit that.
 4. Make sure the GitHub Actions run is green on Windows, macOS and Linux.
-   Nobody has seen the Windows run yet.
+   Nobody has seen the Windows run yet. Round 5 added golden files in
+   `tests/golden/` (the test reads them with line endings normalised); if a
+   Windows run fails only there, look at those files first.
+   Also look at the PyPI preview of `Author`: it must read
+   `Calas Automations Inc.`
 5. Read the PyPI page preview after step 6 (`twine check` does not read the
    words for you).
 
@@ -25,6 +30,7 @@ python -m pip install --upgrade build twine
 rm -rf dist build
 python -m build
 python -m twine check --strict dist/*
+unzip -p dist/*.whl 'standupguy-0.3.0.dist-info/METADATA' | grep '^Author'   # Calas Automations Inc.
 # try it in a throwaway folder first:
 python -m venv /tmp/try && /tmp/try/bin/pip install dist/*.whl
 /tmp/try/bin/standupguy doctor

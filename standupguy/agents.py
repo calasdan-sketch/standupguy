@@ -59,6 +59,16 @@ def agent_of(commit) -> str | None:
     return None
 
 
+def _same_place(cwd: str, root_real: str) -> bool:
+    """Is a session's recorded working folder this repo? A recorded path
+    the file system cannot spell (a non-ASCII folder under an ASCII locale)
+    is simply not this repo, not a crash."""
+    try:
+        return os.path.normcase(os.path.realpath(cwd)) == root_real
+    except (UnicodeError, OSError, ValueError):
+        return False
+
+
 def summary(commits) -> str:
     """`Agent-assisted: 3 of 9 commits (Claude 2, Copilot 1)` or ''."""
     counts: dict = {}
@@ -157,7 +167,7 @@ def _read_session(path, root_real, first_day, last_day):
                 if not isinstance(rec, dict):
                     continue
                 cwd = rec.get("cwd")
-                if isinstance(cwd, str) and os.path.normcase(os.path.realpath(cwd)) == root_real:
+                if isinstance(cwd, str) and _same_place(cwd, root_real):
                     cwd_ok = True
                 if rec.get("type") != "user" or rec.get("isSidechain") \
                         or rec.get("isMeta"):

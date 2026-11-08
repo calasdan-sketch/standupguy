@@ -106,10 +106,23 @@ def _git_env(extra: dict | None = None) -> dict:
     # of someone's repository must not take its lock or change it.
     env["GIT_OPTIONAL_LOCKS"] = "0"
     env["GIT_TERMINAL_PROMPT"] = "0"
+    # `git replace` (refs/replace/*) swaps one commit for another in every
+    # log and diff. The digest reports what the history says, not what a
+    # replacement ref says it says.
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
     env["GIT_PAGER"] = "cat"
     if extra:
         env.update(extra)
     return env
+
+
+def from_git_path(text: str) -> str:
+    """A path git printed (UTF-8 text) as a path this process can open: in
+    the file system's own encoding, a byte it cannot map kept as a surrogate
+    that goes back to the same byte. Under a non-UTF-8 locale (`LC_ALL=C`
+    with PYTHONUTF8=0) `/home/me/caf\u00e9` would otherwise be a
+    UnicodeEncodeError the moment it reached os.path or a subprocess."""
+    return os.fsdecode(text.encode("utf-8", "surrogateescape"))
 
 
 def _git(root: str, *args: str, env: dict | None = None,
@@ -504,7 +517,7 @@ def author_matches(commit: Commit, needle: str | None) -> bool:
       ``git config user.email``) matches that address EXACTLY: the author's,
       or the address of a ``Co-authored-by: Name <email>`` trailer. A
       substring would also find ``jordan@example.com``.
-    - Anything else (``calas``, ``teammate@co``, ``"Dan <dan@x.com>"``) is a
+    - Anything else (``kalas``, ``teammate@co``, ``"Dan <dan@x.com>"``) is a
       case-insensitive substring of the author NAME, the author EMAIL, the
       combined "Name <email>" form, or a co-author trailer.
 
@@ -776,6 +789,18 @@ def uncommitted(root: str) -> list[str]:
             i += 1  # a rename/copy is followed by the ORIGINAL path; skip it
         paths.append(path)
     return paths
+
+
+def is_shallow(root: str) -> bool:
+    """True for a clone made with --depth: git keeps only the newest
+    commits, and the oldest one it kept shows the whole tree as added."""
+    try:
+        return _git(root, "rev-parse",
+                    "--is-shallow-repository").strip() == "true"
+    except (GitNotFound, GitTimeout):
+        raise
+    except RuntimeError:
+        return False
 
 
 def default_author(root: str) -> str:
